@@ -1,0 +1,116 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: invoice_test_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - orchestrator
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    container_name: invoice_test_orchestrator
+    ports:
+      - "3001:3001"
+    environment:
+      APP_DATA_ROOT: /app/data
+      MAIL_INGESTOR_URL: http://mail_ingestor:3002
+      ATTACHMENT_ORGANIZER_URL: http://attachment_organizer:3003
+      IMAGE_PREPROCESSOR_URL: http://image_preprocessor:3004
+      AI_DISPATCHER_URL: http://ai_dispatcher:3005
+      AI_CLEANER_URL: http://ai_cleaner:3006
+      INDEX_EXPORT_URL: http://index_export:3007
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - mail_ingestor
+      - attachment_organizer
+      - image_preprocessor
+      - ai_dispatcher
+      - ai_cleaner
+      - index_export
+
+  mail_ingestor:
+    build:
+      context: .
+      dockerfile: services/mail_ingestor/Dockerfile
+    container_name: invoice_test_mail_ingestor
+    ports:
+      - "3002:3002"
+    environment:
+      APP_DATA_ROOT: /app/data
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USERNAME: ${IMAP_USERNAME:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_FOLDER: ${IMAP_FOLDER:-INBOX}
+    volumes:
+      - ./data:/app/data
+
+  attachment_organizer:
+    build:
+      context: .
+      dockerfile: services/attachment_organizer/Dockerfile
+    container_name: invoice_test_attachment_organizer
+    ports:
+      - "3003:3003"
+    environment:
+      APP_DATA_ROOT: /app/data
+    volumes:
+      - ./data:/app/data
+
+  image_preprocessor:
+    build:
+      context: .
+      dockerfile: services/image_preprocessor/Dockerfile
+    container_name: invoice_test_image_preprocessor
+    ports:
+      - "3004:3004"
+    environment:
+      APP_DATA_ROOT: /app/data
+    volumes:
+      - ./data:/app/data
+
+  ai_dispatcher:
+    build:
+      context: .
+      dockerfile: services/ai_dispatcher/Dockerfile
+    container_name: invoice_test_ai_dispatcher
+    ports:
+      - "3005:3005"
+    environment:
+      APP_DATA_ROOT: /app/data
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      REAL_MODEL_NAME: ${REAL_MODEL_NAME:-gpt-4o-mini}
+    volumes:
+      - ./data:/app/data
+
+  ai_cleaner:
+    build:
+      context: .
+      dockerfile: services/ai_cleaner/Dockerfile
+    container_name: invoice_test_ai_cleaner
+    ports:
+      - "3006:3006"
+    environment:
+      APP_DATA_ROOT: /app/data
+    volumes:
+      - ./data:/app/data
+
+  index_export:
+    build:
+      context: .
+      dockerfile: services/index_export/Dockerfile
+    container_name: invoice_test_index_export
+    ports:
+      - "3007:3007"
+    environment:
+      APP_DATA_ROOT: /app/data
+    volumes:
+      - ./data:/app/data

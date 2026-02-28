@@ -1,0 +1,11 @@
+{
+  "subject": "测试供应商 A 发票",
+  "from": "ap@vendor-a.example",
+  "received_at": "2026-02-28T09:00:00+08:00",
+  "attachments": [
+    "invoice_alpha.ppm"
+  ],
+  "links": [
+    "https://example.test/download/invoice_alpha"
+  ]
+}

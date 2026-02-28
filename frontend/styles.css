@@ -1,0 +1,265 @@
+:root {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --line: #d7dde8;
+  --text: #172033;
+  --muted: #60708a;
+  --accent: #1769e0;
+  --accent-soft: #e9f1ff;
+  --success: #178a4b;
+  --warn: #b56c00;
+  --danger: #b42318;
+  --shadow: 0 12px 28px rgba(23, 32, 51, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top right, rgba(23, 105, 224, 0.08), transparent 24rem),
+    linear-gradient(180deg, #f7f9fd 0%, #eef3fa 100%);
+}
+
+a {
+  color: var(--accent);
+}
+
+.page {
+  width: min(1280px, calc(100% - 32px));
+  margin: 24px auto 40px;
+}
+
+.hero {
+  background: linear-gradient(135deg, #13284f 0%, #1769e0 100%);
+  color: #ffffff;
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.hero h1 {
+  margin: 0 0 10px;
+  font-size: 30px;
+}
+
+.hero p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+  margin-top: 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid rgba(215, 221, 232, 0.9);
+  border-radius: 20px;
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+input,
+select,
+button,
+textarea {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #ffffff;
+}
+
+button {
+  cursor: pointer;
+  background: var(--accent);
+  color: #ffffff;
+  border: 0;
+  font-weight: 600;
+}
+
+button.secondary {
+  background: #ffffff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.status-list {
+  display: grid;
+  gap: 10px;
+}
+
+.status-item {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.badge.pending {
+  color: #375170;
+  background: #eef3fa;
+}
+
+.badge.processing {
+  color: var(--warn);
+  background: #fff4df;
+}
+
+.badge.done {
+  color: var(--success);
+  background: #e8f7ef;
+}
+
+.badge.failed {
+  color: var(--danger);
+  background: #fdeceb;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.page-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: #fcfdff;
+}
+
+.page-card img {
+  display: block;
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  background: #eef2f8;
+}
+
+.page-card .body {
+  padding: 12px;
+}
+
+pre {
+  margin: 0;
+  padding: 12px;
+  background: #0d1830;
+  color: #d6e2ff;
+  border-radius: 14px;
+  overflow: auto;
+  font-size: 12px;
+  min-height: 130px;
+}
+
+.search-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.thumb-mini {
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: #edf1f8;
+}
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+@media (max-width: 768px) {
+  .page {
+    width: min(100%, calc(100% - 20px));
+    margin-top: 14px;
+  }
+
+  .hero {
+    padding: 20px;
+  }
+
+  .hero h1 {
+    font-size: 24px;
+  }
+}

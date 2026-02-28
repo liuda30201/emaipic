@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>发票自动化处理测试系统</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero">
+        <h1>发票自动化处理测试系统</h1>
+        <p>默认使用 Mock 邮箱与 Mock 模型，可在本地一键跑通拉取、预处理、识别、清洗、索引与导出。</p>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>创建批次</h2>
+          <div class="controls">
+            <label>
+              来源
+              <select id="source">
+                <option value="mock">模拟邮箱</option>
+                <option value="imap">真实 IMAP</option>
+                <option value="upload">本地上传</option>
+              </select>
+            </label>
+            <label>
+              预处理 Profile
+              <select id="profile">
+                <option value="prod_default">prod_default</option>
+                <option value="prod_fallback">prod_fallback</option>
+                <option value="prod_high_readability">prod_high_readability</option>
+              </select>
+            </label>
+            <label>
+              模型模式
+              <select id="mode">
+                <option value="mock">mock</option>
+                <option value="real">real</option>
+              </select>
+            </label>
+          </div>
+          <label style="margin-top: 12px;">
+            本地文件（仅 upload 模式）
+            <input id="uploadFiles" type="file" multiple />
+          </label>
+          <div class="actions">
+            <button id="runButton">Run Full Pipeline</button>
+            <button id="refreshButton" class="secondary">刷新当前批次</button>
+          </div>
+          <p class="hint" id="runHint">前端默认连接到 <span id="gatewayUrl"></span></p>
+          <p class="hint" id="currentBatch">当前批次：无</p>
+        </div>
+
+        <div class="panel">
+          <h2>批次状态</h2>
+          <div class="status-list" id="statusList"></div>
+          <p class="hint" id="statusError"></p>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 20px;">
+        <h2>Pages 与识别结果</h2>
+        <div class="pages" id="pagesContainer"></div>
+      </section>
+
+      <section class="panel" style="margin-top: 20px;">
+        <h2>筛选与导出</h2>
+        <div class="search-grid">
+          <label>开始日期<input id="startDate" type="date" /></label>
+          <label>结束日期<input id="endDate" type="date" /></label>
+          <label>发票号<input id="invoiceNo" type="text" placeholder="INV-" /></label>
+          <label>购买方<input id="buyer" type="text" placeholder="购买方" /></label>
+          <label>销售方<input id="seller" type="text" placeholder="销售方" /></label>
+          <label>批次号<input id="searchBatchId" type="text" placeholder="可留空" /></label>
+        </div>
+        <div class="toolbar">
+          <button id="searchButton">搜索</button>
+          <button id="exportCsvButton" class="secondary">生成 CSV</button>
+          <button id="exportZipButton" class="secondary">生成 ZIP</button>
+        </div>
+        <p class="hint" id="searchMeta">尚未搜索</p>
+        <div style="overflow:auto; margin-top: 12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>缩略图</th>
+                <th>发票号</th>
+                <th>日期</th>
+                <th>购买方</th>
+                <th>销售方</th>
+                <th>金额</th>
+                <th>税额</th>
+                <th>价税合计</th>
+              </tr>
+            </thead>
+            <tbody id="searchResults"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
