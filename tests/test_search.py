@@ -221,3 +221,11 @@ def test_search_invoices_filters_by_model_key() -> None:
     results = search_invoices(connection, SearchFilters(model_key="glm-ocr"))
     assert len(results) == 1
     assert results[0]["model_key"] == "glm-ocr"
+
+
+def test_search_invoices_returns_all_models_when_requested() -> None:
+    connection = sqlite3.connect(":memory:")
+    setup_table(connection)
+    results = search_invoices(connection, SearchFilters(model_key="__all__"))
+    assert len(results) == 3
+    assert {item["model_key"] for item in results} == {"mock", "glm-ocr"}

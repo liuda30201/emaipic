@@ -81,7 +81,7 @@
           <label>
             模型
             <select id="searchModelKey">
-              <option value="">主模型（默认）</option>
+              <option value="__all__">全部模型（默认）</option>
             </select>
           </label>
         </div>
@@ -110,6 +110,35 @@
           </table>
         </div>
       </section>
+    </div>
+
+    <div id="previewModal" class="modal-backdrop" hidden>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="previewModalTitle">
+        <button id="previewCloseButton" class="modal-close" type="button" aria-label="关闭">X</button>
+        <div class="modal-layout">
+          <div class="modal-image-pane">
+            <div class="modal-toolbar">
+              <strong id="previewModalTitle">AI 输入图预览</strong>
+              <div class="modal-zoom-controls">
+                <button id="previewZoomOut" class="secondary" type="button">-</button>
+                <button id="previewZoomReset" class="secondary" type="button">重置</button>
+                <button id="previewZoomIn" class="secondary" type="button">+</button>
+              </div>
+            </div>
+            <div id="previewImageViewport" class="modal-image-viewport">
+              <img id="previewImage" class="modal-image" alt="AI 输入图" />
+            </div>
+          </div>
+          <div class="modal-info-pane">
+            <div class="modal-meta">
+              <div><strong>batch_id:</strong> <span id="previewBatchId">-</span></div>
+              <div><strong>page_id:</strong> <span id="previewPageId">-</span></div>
+              <div><strong>model_key:</strong> <span id="previewModelKey">-</span></div>
+            </div>
+            <pre id="previewJson" class="modal-json">{}</pre>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="./config.js"></script>

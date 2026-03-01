@@ -5,6 +5,8 @@ from typing import Any
 
 from libs.common.models import SearchFilters
 
+ALL_MODELS_KEY = "__all__"
+
 
 def _where_clauses(filters: SearchFilters) -> tuple[list[str], list[Any]]:
     clauses = ["i.is_invoice = 1"]
@@ -35,7 +37,7 @@ def _where_clauses(filters: SearchFilters) -> tuple[list[str], list[Any]]:
     if "max_total" in compact:
         clauses.append("CAST(i.total AS REAL) <= CAST(? AS REAL)")
         params.append(compact["max_total"])
-    if "model_key" in compact:
+    if "model_key" in compact and compact["model_key"] != ALL_MODELS_KEY:
         clauses.append("i.model_key = ?")
         params.append(compact["model_key"])
     return clauses, params

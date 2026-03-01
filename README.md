@@ -102,7 +102,43 @@ make down
 - 支持模型多选（最多 3 个）
 - 查看每页缩略图
 - 按页切换查看不同模型结果
+- 在识别清单中打开浮窗预览，预览内容固定为 AI 实际收到的 `processed page image`
 - 按 `model_key` 搜索与导出
+
+## 预览与图片代理
+
+浮窗预览展示的是 AI 输入图，不是原始附件。前端始终通过 orchestrator 代理后的 processed 图片地址预览：
+
+- `GET /api/batches/{batch_id}/pages/{page_id}/image`
+- `GET /api/batches/{batch_id}/pages/{page_id}/thumb`
+
+浏览器可直接访问：
+
+```bash
+http://localhost:3001/api/batches/{batch_id}/pages/{page_id}/image
+```
+
+这两个接口由 orchestrator 转发到 `image_preprocessor:3004`，用于统一前端访问入口，避免跨端口和跨容器地址暴露。
+
+## 小图自适应预处理策略
+
+为减少小图在预处理后变糊的问题，`image_preprocessor` 对 `max_edge < 1600` 的图片自动启用 small-text 自适应策略，且不改变用户选择的 profile 名称：
+
+- 阈值：`max(width, height) < 1600`
+- 输出格式：仍跟随当前 profile（webp/jpg）
+- 输出质量：小图强制提升到 `>= 90`
+- 长边目标：提升到 `2000`，并允许上采样
+- 缩放插值：使用 `Image.Resampling.LANCZOS`
+- 轻锐化：启用 `Unsharp Mask`
+- 裁边：保持开启
+- 处理后在 `processed manifest` 中记录：
+  - `adaptive_applied`
+  - `original_size`
+  - `output_quality`
+  - `upscale_applied`
+  - `unsharp`
+
+正常图（`max_edge >= 1600`）仍按原 profile 参数执行，例如 `prod_default` 继续使用原始的 `webp q=75 long_edge=1800`。
 
 ## 默认验收路径
 
@@ -164,6 +200,12 @@ curl -X POST "http://localhost:3001/api/run/upload" \
   -F 'prompt_version=v1' \
   -F 'models=["mock"]' \
   -F 'files=@samples/mailbox/attachments/invoice_alpha.ppm;type=image/x-portable-pixmap'
+```
+
+### 查看某一页的 AI 输入图
+
+```bash
+curl -o preview.webp "http://localhost:3001/api/batches/{batch_id}/pages/{page_id}/image"
 ```
 
 ## 数据目录

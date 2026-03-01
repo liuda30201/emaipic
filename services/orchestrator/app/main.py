@@ -9,9 +9,9 @@ from typing import Any
 
 import httpx
 from fastapi import File, Form, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
-from libs.common.api import create_app, fail, success_response
+from libs.common.api import create_app, error_payload, fail, success_response
 from libs.common.logging_utils import append_batch_log
 from libs.common.manifests import read_json, write_json_atomic
 from libs.common.models import MODEL_SELECTION_LIMIT
@@ -33,7 +33,7 @@ def service_url(name: str) -> str:
     defaults = {
         "mail_ingestor": "http://localhost:3002",
         "attachment_organizer": "http://localhost:3003",
-        "image_preprocessor": "http://localhost:3004",
+        "image_preprocessor": "http://image_preprocessor:3004",
         "ai_dispatcher": "http://localhost:3005",
         "ai_cleaner": "http://localhost:3006",
         "index_export": "http://localhost:3007",
@@ -200,15 +200,23 @@ def on_startup() -> None:
 
 
 def proxy_binary(url: str) -> Response:
-    with client() as session:
-        upstream = session.get(url)
-    upstream.raise_for_status()
+    try:
+        with client() as session:
+            upstream = session.get(url)
+    except httpx.HTTPError as exc:
+        return JSONResponse(status_code=502, content=error_payload(f"Failed to proxy upstream binary: {exc}", code="proxy_error"))
+
     content_type = upstream.headers.get("content-type")
     headers: dict[str, str] = {}
     content_disposition = upstream.headers.get("content-disposition")
     if content_disposition:
         headers["content-disposition"] = content_disposition
-    return Response(content=upstream.content, media_type=content_type, headers=headers)
+    return Response(
+        content=upstream.content,
+        media_type=content_type,
+        headers=headers,
+        status_code=upstream.status_code,
+    )
 
 
 @app.get("/healthz")
@@ -385,3 +393,13 @@ def proxy_thumb(batch_id: str, page_id: str) -> Response:
 @app.get("/api/assets/image/{batch_id}/{page_id}")
 def proxy_image(batch_id: str, page_id: str) -> Response:
     return proxy_binary(f"{service_url('index_export')}/api/assets/image/{batch_id}/{page_id}")
+
+
+@app.get("/api/batches/{batch_id}/pages/{page_id}/image")
+def proxy_processed_page_image(batch_id: str, page_id: str) -> Response:
+    return proxy_binary(f"{service_url('image_preprocessor')}/api/batches/{batch_id}/pages/{page_id}/image")
+
+
+@app.get("/api/batches/{batch_id}/pages/{page_id}/thumb")
+def proxy_processed_page_thumb(batch_id: str, page_id: str) -> Response:
+    return proxy_binary(f"{service_url('image_preprocessor')}/api/batches/{batch_id}/pages/{page_id}/thumb")

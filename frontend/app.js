@@ -6,8 +6,10 @@ const state = {
   batchId: null,
   pollTimer: null,
   modelsCatalog: [],
+  latestSearch: [],
   pageResultsByPage: new Map(),
-  pageModelSelections: new Map()
+  pageModelSelections: new Map(),
+  previewScale: 1
 };
 
 const sourceInput = document.getElementById("source");
@@ -26,6 +28,17 @@ const searchMeta = document.getElementById("searchMeta");
 const modelList = document.getElementById("modelList");
 const modelSelectionHint = document.getElementById("modelSelectionHint");
 const searchModelKey = document.getElementById("searchModelKey");
+const previewModal = document.getElementById("previewModal");
+const previewCloseButton = document.getElementById("previewCloseButton");
+const previewZoomOut = document.getElementById("previewZoomOut");
+const previewZoomReset = document.getElementById("previewZoomReset");
+const previewZoomIn = document.getElementById("previewZoomIn");
+const previewImage = document.getElementById("previewImage");
+const previewImageViewport = document.getElementById("previewImageViewport");
+const previewBatchId = document.getElementById("previewBatchId");
+const previewPageId = document.getElementById("previewPageId");
+const previewModelKey = document.getElementById("previewModelKey");
+const previewJson = document.getElementById("previewJson");
 
 gatewayUrl.textContent = baseUrl;
 
@@ -38,6 +51,38 @@ function badge(status) {
 function setBusy(isBusy) {
   runButton.disabled = isBusy;
   refreshButton.disabled = isBusy;
+}
+
+function setPreviewScale(scale) {
+  state.previewScale = Math.min(4, Math.max(0.5, scale));
+  previewImage.style.transform = `scale(${state.previewScale})`;
+}
+
+function closePreviewModal() {
+  previewModal.hidden = true;
+  previewImage.removeAttribute("src");
+  previewImage.alt = "AI 输入图";
+  previewJson.textContent = "{}";
+  previewBatchId.textContent = "-";
+  previewPageId.textContent = "-";
+  previewModelKey.textContent = "-";
+  setPreviewScale(1);
+}
+
+function openPreviewModal({ batch_id, page_id, model_key, record }) {
+  if (!batch_id || !page_id) {
+    statusError.textContent = "缺少 batch_id 或 page_id，无法预览 AI 输入图";
+    return;
+  }
+  const imageUrl = `${baseUrl}/api/batches/${encodeURIComponent(batch_id)}/pages/${encodeURIComponent(page_id)}/image`;
+  previewBatchId.textContent = batch_id;
+  previewPageId.textContent = page_id;
+  previewModelKey.textContent = model_key || "-";
+  previewJson.textContent = JSON.stringify(record || {}, null, 2);
+  previewImage.src = imageUrl;
+  previewImage.alt = `AI 输入图 ${page_id}`;
+  previewModal.hidden = false;
+  setPreviewScale(1);
 }
 
 function getJson(url, options) {
@@ -62,8 +107,39 @@ function selectedModels() {
   return Array.from(document.querySelectorAll(".model-checkbox:checked")).map((input) => input.value);
 }
 
+function modelLabel(modelKey) {
+  const match = state.modelsCatalog.find((item) => item.key === modelKey);
+  return match ? match.label : modelKey;
+}
+
+function updateSearchModelOptions(modelKeys) {
+  const uniqueKeys = [];
+  (modelKeys || []).forEach((key) => {
+    const normalized = String(key || "").trim();
+    if (normalized && !uniqueKeys.includes(normalized)) {
+      uniqueKeys.push(normalized);
+    }
+  });
+
+  const previousValue = searchModelKey.value || "__all__";
+  searchModelKey.innerHTML = `<option value="__all__">全部模型（默认）</option>`;
+
+  uniqueKeys.forEach((key) => {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = modelLabel(key);
+    searchModelKey.appendChild(option);
+  });
+
+  searchModelKey.value = uniqueKeys.includes(previousValue) || previousValue === "__all__" ? previousValue : "__all__";
+}
+
 function updateModelSelectionHint() {
-  modelSelectionHint.textContent = `已选 ${selectedModels().length} / 3`;
+  const checked = selectedModels();
+  modelSelectionHint.textContent = `已选 ${checked.length} / 3`;
+  if (!state.batchId) {
+    updateSearchModelOptions(checked);
+  }
 }
 
 function renderModelCatalog(items) {
@@ -104,13 +180,6 @@ function renderModelCatalog(items) {
     });
   });
 
-  searchModelKey.innerHTML = `<option value="">主模型（默认）</option>`;
-  items.forEach((item) => {
-    const option = document.createElement("option");
-    option.value = item.key;
-    option.textContent = item.label;
-    searchModelKey.appendChild(option);
-  });
   updateModelSelectionHint();
 }
 
@@ -126,6 +195,7 @@ async function loadModels() {
 function renderStatus(data) {
   currentBatch.textContent = `当前批次：${data.batch_id || "无"}`;
   statusError.textContent = data.error ? `${data.error.step}: ${data.error.message}` : "";
+  updateSearchModelOptions(data.models || []);
   statusList.innerHTML = (data.steps || [])
     .map(
       (step) => `
@@ -339,6 +409,7 @@ function collectFilters() {
 }
 
 function renderSearch(items) {
+  state.latestSearch = items;
   searchMeta.textContent = `命中 ${items.length} 条`;
   if (!items.length) {
     searchResults.innerHTML = `<tr><td colspan="9" class="hint">无结果</td></tr>`;
@@ -346,12 +417,31 @@ function renderSearch(items) {
   }
   searchResults.innerHTML = items
     .map(
-      (item) => `
+      (item, index) => `
         <tr>
           <td>
-            <a href="${baseUrl}${item.image_url}" target="_blank" rel="noreferrer">
+            <button
+              class="preview-thumb-button search-preview-trigger"
+              type="button"
+              data-index="${index}"
+              data-page-id="${escapeHtml(item.page_id || "")}"
+              data-batch-id="${escapeHtml(item.batch_id || "")}"
+              data-model-key="${escapeHtml(item.model_key || "")}"
+              ${item.batch_id && item.page_id ? "" : "disabled title=\"缺少 batch_id/page_id\""}
+            >
               <img class="thumb-mini" src="${baseUrl}${item.thumb_url}" alt="${escapeHtml(item.page_id)}" />
-            </a>
+            </button>
+            <button
+              class="secondary preview-action search-preview-trigger"
+              type="button"
+              data-index="${index}"
+              data-page-id="${escapeHtml(item.page_id || "")}"
+              data-batch-id="${escapeHtml(item.batch_id || "")}"
+              data-model-key="${escapeHtml(item.model_key || "")}"
+              ${item.batch_id && item.page_id ? "" : "disabled title=\"缺少 batch_id/page_id\""}
+            >
+              预览
+            </button>
           </td>
           <td>${escapeHtml(item.invoice_no || "")}</td>
           <td>${escapeHtml(item.invoice_date || "")}</td>
@@ -365,6 +455,18 @@ function renderSearch(items) {
       `
     )
     .join("");
+
+  searchResults.querySelectorAll(".search-preview-trigger").forEach((button) => {
+    button.addEventListener("click", () => {
+      const record = state.latestSearch[Number(button.dataset.index || "-1")] || {};
+      openPreviewModal({
+        batch_id: button.dataset.batchId,
+        page_id: button.dataset.pageId,
+        model_key: button.dataset.modelKey,
+        record
+      });
+    });
+  });
 }
 
 async function searchInvoices() {
@@ -403,6 +505,31 @@ refreshButton.addEventListener("click", () => {
 document.getElementById("searchButton").addEventListener("click", searchInvoices);
 document.getElementById("exportCsvButton").addEventListener("click", () => createExport("csv"));
 document.getElementById("exportZipButton").addEventListener("click", () => createExport("zip"));
+previewCloseButton.addEventListener("click", closePreviewModal);
+previewModal.addEventListener("click", (event) => {
+  if (event.target === previewModal) {
+    closePreviewModal();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !previewModal.hidden) {
+    closePreviewModal();
+  }
+});
+previewZoomIn.addEventListener("click", () => setPreviewScale(state.previewScale + 0.2));
+previewZoomOut.addEventListener("click", () => setPreviewScale(state.previewScale - 0.2));
+previewZoomReset.addEventListener("click", () => setPreviewScale(1));
+previewImageViewport.addEventListener(
+  "wheel",
+  (event) => {
+    if (previewModal.hidden) {
+      return;
+    }
+    event.preventDefault();
+    setPreviewScale(state.previewScale + (event.deltaY < 0 ? 0.1 : -0.1));
+  },
+  { passive: false }
+);
 
 renderStatus({ steps: [] });
 renderPages({ pages: [], results: [] });
