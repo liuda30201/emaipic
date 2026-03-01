@@ -9,7 +9,8 @@ const state = {
   latestSearch: [],
   pageResultsByPage: new Map(),
   pageModelSelections: new Map(),
-  previewScale: 1
+  previewScale: 1,
+  hasManualModelSelection: false
 };
 
 const sourceInput = document.getElementById("source");
@@ -138,7 +139,7 @@ function updateModelSelectionHint() {
   const checked = selectedModels();
   modelSelectionHint.textContent = `已选 ${checked.length} / 3`;
   if (!state.batchId) {
-    updateSearchModelOptions(checked);
+    updateSearchModelOptions(state.hasManualModelSelection ? checked : []);
   }
 }
 
@@ -169,6 +170,7 @@ function renderModelCatalog(items) {
 
   modelList.querySelectorAll(".model-checkbox").forEach((input) => {
     input.addEventListener("change", (event) => {
+      state.hasManualModelSelection = true;
       const checked = selectedModels();
       if (checked.length > 3) {
         event.target.checked = false;
