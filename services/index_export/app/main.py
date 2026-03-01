@@ -67,6 +67,9 @@ INVOICES_COLUMNS = [
     "buyer",
     "seller",
     "item",
+    "service_summary",
+    "prompt_version",
+    "normalized_payload",
     "amt",
     "tax",
     "total",
@@ -79,6 +82,7 @@ MODEL_RUNS_COLUMNS = [
     "page_id",
     "model_key",
     "run_id",
+    "prompt_version",
     "status",
     "record_count",
     "is_invoice_detected",
@@ -157,6 +161,9 @@ def ensure_schema() -> None:
                 buyer TEXT,
                 seller TEXT,
                 item TEXT,
+                service_summary TEXT,
+                prompt_version TEXT NOT NULL,
+                normalized_payload TEXT,
                 amt TEXT,
                 tax TEXT,
                 total TEXT,
@@ -174,6 +181,7 @@ def ensure_schema() -> None:
                 page_id TEXT NOT NULL,
                 model_key TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
                 status TEXT NOT NULL,
                 record_count INTEGER NOT NULL,
                 is_invoice_detected INTEGER,
@@ -284,6 +292,64 @@ def export_csv(records: list[dict[str, Any]]) -> str:
     return output.getvalue()
 
 
+def export_items_csv(records: list[dict[str, Any]]) -> str | None:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        payload = record.get("normalized_payload") or {}
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            continue
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                {
+                    "batch_id": record.get("batch_id"),
+                    "doc_id": record.get("doc_id"),
+                    "file_id": record.get("file_id"),
+                    "page_id": record.get("page_id"),
+                    "model_key": record.get("model_key"),
+                    "run_id": record.get("run_id"),
+                    "record_index": record.get("record_index"),
+                    "item_index": index,
+                    "name": item.get("name"),
+                    "spec": item.get("spec"),
+                    "unit": item.get("unit"),
+                    "qty": item.get("qty"),
+                    "price": item.get("price"),
+                    "amount": item.get("amount"),
+                    "tax": item.get("tax"),
+                }
+            )
+    if not rows:
+        return None
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "batch_id",
+            "doc_id",
+            "file_id",
+            "page_id",
+            "model_key",
+            "run_id",
+            "record_index",
+            "item_index",
+            "name",
+            "spec",
+            "unit",
+            "qty",
+            "price",
+            "amount",
+            "tax",
+        ],
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return output.getvalue()
+
+
 def build_combined_pdf(records: list[dict[str, Any]], target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     unique_pages: dict[str, dict[str, Any]] = {}
@@ -337,15 +403,21 @@ def create_export_bundle(export_id: str, records: list[dict[str, Any]], filters:
         shutil.rmtree(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
     csv_path = export_dir / "invoices.csv"
+    items_csv_path = export_dir / "invoice_items.csv"
     combined_pdf_path = export_dir / "pdf" / "combined.pdf"
     zip_path = export_dir / "bundle.zip"
 
     csv_path.write_text(export_csv(records), encoding="utf-8")
+    items_csv_content = export_items_csv(records)
+    if items_csv_content:
+        items_csv_path.write_text(items_csv_content, encoding="utf-8")
     build_combined_pdf(records, combined_pdf_path)
 
     added_files: set[str] = set()
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(csv_path, "invoices.csv")
+        if items_csv_path.exists():
+            archive.write(items_csv_path, "invoice_items.csv")
         if combined_pdf_path.exists():
             archive.write(combined_pdf_path, "pdf/combined.pdf")
 
@@ -462,8 +534,9 @@ def index_batch(batch_id: str) -> dict[str, Any]:
                 """
                 INSERT INTO invoices (
                     page_id, model_key, run_id, record_index, is_invoice, num, date, buyer,
-                    seller, item, amt, tax, total, created_at, batch_id, file_id, doc_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    seller, item, service_summary, prompt_version, normalized_payload,
+                    amt, tax, total, created_at, batch_id, file_id, doc_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["page_id"],
@@ -476,6 +549,9 @@ def index_batch(batch_id: str) -> dict[str, Any]:
                     record.get("buyer"),
                     record.get("seller"),
                     record.get("item"),
+                    record.get("item"),
+                    record.get("prompt_version", "v1"),
+                    json.dumps(record.get("normalized_payload") or {}, ensure_ascii=False),
                     record.get("amt"),
                     record.get("tax"),
                     record.get("total"),
@@ -499,14 +575,15 @@ def index_batch(batch_id: str) -> dict[str, Any]:
                 connection.execute(
                     """
                     INSERT INTO model_runs (
-                        page_id, model_key, run_id, status, record_count, is_invoice_detected,
+                        page_id, model_key, run_id, prompt_version, status, record_count, is_invoice_detected,
                         error_reason, error_message, created_at, batch_id, file_id, doc_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         page_entry["page_id"],
                         model_run["model_key"],
                         model_run["run_id"],
+                        model_run.get("prompt_version", clean_summary.get("prompt_version", "v1")),
                         model_run.get("status", "done"),
                         len(records),
                         is_invoice_detected,

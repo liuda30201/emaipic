@@ -76,6 +76,7 @@ def resolve_image_value(image_type: str, value: str) -> str:
 
 def mock_infer(request: ModelInferRequest) -> tuple[str, dict[str, Any]]:
     page_id = str(request.meta.get("page_id", request.image.value))
+    prompt_version = str(request.meta.get("prompt_version", "v1"))
     seed = sum(ord(char) for char in page_id)
     sequence = 100000 + (seed % 899999)
     invoice_date = date(2026, 3, 1) - timedelta(days=seed % 17)
@@ -83,34 +84,87 @@ def mock_infer(request: ModelInferRequest) -> tuple[str, dict[str, Any]]:
     tax = (amount * Decimal("0.06")).quantize(Decimal("0.01"))
     total = (amount + tax).quantize(Decimal("0.01"))
     if "non_invoice" in request.image.value.lower():
-        payload = [
-            {
-                "is_invoice": False,
-                "num": "",
-                "date": "",
-                "item": "",
-                "buyer": "",
-                "seller": "",
-                "amt": "",
-                "tax": "",
-                "total": "",
-            }
-        ]
+        if prompt_version == "v2":
+            payload = [
+                {
+                    "is_invoice": False,
+                    "num": "",
+                    "date": "",
+                    "buyer": "",
+                    "seller": "",
+                    "items": [],
+                    "amt": "",
+                    "tax": "",
+                    "total": "",
+                }
+            ]
+        else:
+            payload = [
+                {
+                    "is_invoice": False,
+                    "num": "",
+                    "date": "",
+                    "item": "",
+                    "buyer": "",
+                    "seller": "",
+                    "amt": "",
+                    "tax": "",
+                    "total": "",
+                }
+            ]
     else:
-        payload = [
-            {
-                "is_invoice": True,
-                "num": f"INV-{sequence}",
-                "date": invoice_date.isoformat(),
-                "item": f"服务项目{(seed % 3) + 1}",
-                "buyer": f"测试购买方{seed % 9}",
-                "seller": f"测试销售方{seed % 7}",
-                "amt": f"{amount:.2f}",
-                "tax": f"{tax:.2f}",
-                "total": f"{total:.2f}",
-            }
-        ]
-    return json.dumps(payload, ensure_ascii=False), {"adapter": "mock", "items": len(payload)}
+        item_one_amount = (amount * Decimal("0.60")).quantize(Decimal("0.01"))
+        item_two_amount = (amount - item_one_amount).quantize(Decimal("0.01"))
+        item_one_tax = (item_one_amount * Decimal("0.06")).quantize(Decimal("0.01"))
+        item_two_tax = (tax - item_one_tax).quantize(Decimal("0.01"))
+        if prompt_version == "v2":
+            payload = [
+                {
+                    "is_invoice": True,
+                    "num": f"INV-{sequence}",
+                    "date": invoice_date.isoformat(),
+                    "buyer": f"测试购买方{seed % 9}",
+                    "seller": f"测试销售方{seed % 7}",
+                    "items": [
+                        {
+                            "name": f"服务项目{(seed % 3) + 1}",
+                            "spec": "",
+                            "unit": "项",
+                            "qty": "1",
+                            "price": f"{item_one_amount:.2f}",
+                            "amount": f"{item_one_amount:.2f}",
+                            "tax": f"{item_one_tax:.2f}",
+                        },
+                        {
+                            "name": f"商品名称{(seed % 4) + 1}",
+                            "spec": "",
+                            "unit": "项",
+                            "qty": "1",
+                            "price": f"{item_two_amount:.2f}",
+                            "amount": f"{item_two_amount:.2f}",
+                            "tax": f"{item_two_tax:.2f}",
+                        },
+                    ],
+                    "amt": f"{amount:.2f}",
+                    "tax": f"{tax:.2f}",
+                    "total": f"{total:.2f}",
+                }
+            ]
+        else:
+            payload = [
+                {
+                    "is_invoice": True,
+                    "num": f"INV-{sequence}",
+                    "date": invoice_date.isoformat(),
+                    "item": f"服务项目{(seed % 3) + 1}",
+                    "buyer": f"测试购买方{seed % 9}",
+                    "seller": f"测试销售方{seed % 7}",
+                    "amt": f"{amount:.2f}",
+                    "tax": f"{tax:.2f}",
+                    "total": f"{total:.2f}",
+                }
+            ]
+    return json.dumps(payload, ensure_ascii=False), {"adapter": "mock", "items": len(payload), "prompt_version": prompt_version}
 
 
 def provider_base_url(provider: str) -> str:

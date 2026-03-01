@@ -2,6 +2,8 @@ const baseUrl =
   (window.APP_CONFIG && window.APP_CONFIG.ORCHESTRATOR_BASE_URL) ||
   `${window.location.protocol}//${window.location.hostname}:3001`;
 
+const COLUMN_STORAGE_KEY = "invoice_table_columns_v1";
+
 const state = {
   batchId: null,
   pollTimer: null,
@@ -10,7 +12,8 @@ const state = {
   pageResultsByPage: new Map(),
   pageModelSelections: new Map(),
   previewScale: 1,
-  hasManualModelSelection: false
+  hasManualModelSelection: false,
+  columnVisibility: {}
 };
 
 const sourceInput = document.getElementById("source");
@@ -24,8 +27,11 @@ const currentBatch = document.getElementById("currentBatch");
 const statusList = document.getElementById("statusList");
 const statusError = document.getElementById("statusError");
 const pagesContainer = document.getElementById("pagesContainer");
+const searchHeaderRow = document.getElementById("searchHeaderRow");
 const searchResults = document.getElementById("searchResults");
 const searchMeta = document.getElementById("searchMeta");
+const searchExportActions = document.getElementById("searchExportActions");
+const columnSettings = document.getElementById("columnSettings");
 const modelList = document.getElementById("modelList");
 const modelSelectionHint = document.getElementById("modelSelectionHint");
 const searchModelKey = document.getElementById("searchModelKey");
@@ -37,17 +43,134 @@ const previewZoomOut = document.getElementById("previewZoomOut");
 const previewZoomReset = document.getElementById("previewZoomReset");
 const previewZoomIn = document.getElementById("previewZoomIn");
 const previewImage = document.getElementById("previewImage");
+const previewImageHint = document.getElementById("previewImageHint");
 const previewImageViewport = document.getElementById("previewImageViewport");
 const previewBatchId = document.getElementById("previewBatchId");
 const previewPageId = document.getElementById("previewPageId");
 const previewModelKey = document.getElementById("previewModelKey");
+const previewRunId = document.getElementById("previewRunId");
 const previewJson = document.getElementById("previewJson");
+
+const TABLE_COLUMNS = [
+  {
+    key: "preview",
+    label: "预览",
+    fixed: true,
+    defaultChecked: true,
+    order: 0,
+    renderFn: (record, index) => renderPreviewCell(record, index)
+  },
+  {
+    key: "invoice_no",
+    label: "发票号",
+    fixed: false,
+    defaultChecked: true,
+    order: 10,
+    renderFn: (record) => escapeHtml(record.invoice_no || "")
+  },
+  {
+    key: "invoice_date",
+    label: "日期",
+    fixed: true,
+    defaultChecked: true,
+    order: 20,
+    renderFn: (record) => escapeHtml(record.invoice_date || "")
+  },
+  {
+    key: "buyer_name",
+    label: "购买方",
+    fixed: true,
+    defaultChecked: true,
+    order: 30,
+    renderFn: (record) => escapeHtml(record.buyer_name || "")
+  },
+  {
+    key: "seller_name",
+    label: "销售方",
+    fixed: true,
+    defaultChecked: true,
+    order: 40,
+    renderFn: (record) => escapeHtml(record.seller_name || "")
+  },
+  {
+    key: "service_summary",
+    label: "服务摘要",
+    fixed: true,
+    defaultChecked: true,
+    order: 50,
+    renderFn: (record) => escapeHtml(serviceSummary(record) || "")
+  },
+  {
+    key: "total",
+    label: "价税合计",
+    fixed: true,
+    defaultChecked: true,
+    order: 60,
+    renderFn: (record) => escapeHtml(record.total || "")
+  },
+  {
+    key: "amount",
+    label: "不含税金额",
+    fixed: false,
+    defaultChecked: true,
+    order: 70,
+    renderFn: (record) => escapeHtml(record.amount || "")
+  },
+  {
+    key: "tax",
+    label: "税额",
+    fixed: false,
+    defaultChecked: true,
+    order: 80,
+    renderFn: (record) => escapeHtml(record.tax || "")
+  },
+  {
+    key: "model_key",
+    label: "模型",
+    fixed: false,
+    defaultChecked: true,
+    order: 90,
+    renderFn: (record) => escapeHtml(record.model_key || "")
+  },
+  {
+    key: "result_status",
+    label: "状态",
+    fixed: false,
+    defaultChecked: true,
+    order: 100,
+    renderFn: (record) => escapeHtml(record.result_status || "done")
+  },
+  {
+    key: "error_message",
+    label: "失败原因",
+    fixed: false,
+    defaultChecked: true,
+    order: 110,
+    renderFn: (record) => escapeHtml(failureMessage(record))
+  },
+  {
+    key: "batch_id",
+    label: "批次号",
+    fixed: false,
+    defaultChecked: true,
+    order: 120,
+    renderFn: (record) => escapeHtml(record.batch_id || "")
+  },
+  {
+    key: "page_id",
+    label: "页ID",
+    fixed: false,
+    defaultChecked: true,
+    order: 130,
+    renderFn: (record) => escapeHtml(record.page_id || "")
+  }
+];
 
 gatewayUrl.textContent = baseUrl;
 
 function badge(status) {
   const normalized = status || "pending";
-  const safeStatus = ["pending", "processing", "done", "failed"].includes(normalized) ? normalized : "pending";
+  const safeStatus = ["pending", "processing", "done", "failed", "partial"].includes(normalized) ? normalized : "pending";
   return `<span class="badge ${safeStatus}">${normalized}</span>`;
 }
 
@@ -56,38 +179,11 @@ function setBusy(isBusy) {
   refreshButton.disabled = isBusy;
 }
 
-function setPreviewScale(scale) {
-  state.previewScale = Math.min(4, Math.max(0.5, scale));
-  previewImage.style.transform = `scale(${state.previewScale})`;
-}
-
-function closePreviewModal() {
-  previewModal.hidden = true;
-  previewImage.removeAttribute("src");
-  previewImage.alt = "AI 输入图";
-  previewJson.textContent = "{}";
-  previewBatchId.textContent = "-";
-  previewPageId.textContent = "-";
-  previewModelKey.textContent = "-";
-  setPreviewScale(1);
-}
-
-closePreviewModal();
-
-function openPreviewModal({ batch_id, page_id, model_key, record }) {
-  if (!batch_id || !page_id) {
-    statusError.textContent = "缺少 batch_id 或 page_id，无法预览 AI 输入图";
-    return;
-  }
-  const imageUrl = `${baseUrl}/api/batches/${encodeURIComponent(batch_id)}/pages/${encodeURIComponent(page_id)}/image`;
-  previewBatchId.textContent = batch_id;
-  previewPageId.textContent = page_id;
-  previewModelKey.textContent = model_key || "-";
-  previewJson.textContent = JSON.stringify(record || {}, null, 2);
-  previewImage.src = imageUrl;
-  previewImage.alt = `AI 输入图 ${page_id}`;
-  previewModal.hidden = false;
-  setPreviewScale(1);
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function getJson(url, options) {
@@ -101,13 +197,6 @@ function getJson(url, options) {
   });
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 function selectedModels() {
   return Array.from(document.querySelectorAll(".model-checkbox:checked")).map((input) => input.value);
 }
@@ -115,6 +204,169 @@ function selectedModels() {
 function modelLabel(modelKey) {
   const match = state.modelsCatalog.find((item) => item.key === modelKey);
   return match ? match.label : modelKey;
+}
+
+function setPreviewScale(scale) {
+  state.previewScale = Math.min(4, Math.max(0.5, scale));
+  previewImage.style.transform = `scale(${state.previewScale})`;
+}
+
+function closePreviewModal() {
+  previewModal.hidden = true;
+  previewImage.onload = null;
+  previewImage.onerror = null;
+  previewImage.removeAttribute("src");
+  previewImage.alt = "AI 输入图";
+  previewImageHint.textContent = "请选择一条识别结果进行预览";
+  previewJson.textContent = "{}";
+  previewBatchId.textContent = "-";
+  previewPageId.textContent = "-";
+  previewModelKey.textContent = "-";
+  previewRunId.textContent = "-";
+  setPreviewScale(1);
+}
+
+function openPreviewModal({ batch_id, page_id, model_key, run_id, record }) {
+  if (!batch_id || !page_id) {
+    statusError.textContent = "缺少 batch_id 或 page_id，无法预览 AI 输入图";
+    return;
+  }
+  const imageUrl = `${baseUrl}/api/batches/${encodeURIComponent(batch_id)}/pages/${encodeURIComponent(page_id)}/image`;
+  previewBatchId.textContent = batch_id;
+  previewPageId.textContent = page_id;
+  previewModelKey.textContent = model_key || "-";
+  previewRunId.textContent = run_id || "-";
+  previewJson.textContent = JSON.stringify(record.normalized_payload || record || {}, null, 2);
+  previewImageHint.textContent = "AI 输入图加载中...";
+  previewImage.onload = () => {
+    previewImageHint.textContent = "";
+  };
+  previewImage.onerror = () => {
+    previewImageHint.textContent = "AI 输入图加载失败";
+  };
+  previewImage.src = imageUrl;
+  previewImage.alt = `AI 输入图 ${page_id}`;
+  previewModal.hidden = false;
+  setPreviewScale(1);
+}
+
+function buildDefaultColumnVisibility() {
+  const visibility = {};
+  TABLE_COLUMNS.forEach((column) => {
+    if (!column.fixed) {
+      visibility[column.key] = column.defaultChecked !== false;
+    }
+  });
+  return visibility;
+}
+
+function loadColumnVisibility() {
+  const defaults = buildDefaultColumnVisibility();
+  try {
+    const raw = window.localStorage.getItem(COLUMN_STORAGE_KEY);
+    if (!raw) {
+      return defaults;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return defaults;
+    }
+    return { ...defaults, ...parsed };
+  } catch (error) {
+    return defaults;
+  }
+}
+
+function saveColumnVisibility() {
+  window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(state.columnVisibility));
+}
+
+function visibleColumns() {
+  return TABLE_COLUMNS.slice()
+    .sort((left, right) => left.order - right.order)
+    .filter((column) => column.fixed || state.columnVisibility[column.key] !== false);
+}
+
+function renderColumnSettings() {
+  const columns = TABLE_COLUMNS.slice().sort((left, right) => left.order - right.order);
+  columnSettings.innerHTML = columns
+    .map(
+      (column) => `
+        <label class="column-setting">
+          <input
+            type="checkbox"
+            data-column-key="${escapeHtml(column.key)}"
+            ${column.fixed || state.columnVisibility[column.key] !== false ? "checked" : ""}
+            ${column.fixed ? "disabled" : ""}
+          />
+          <span>${escapeHtml(column.label)}${column.fixed ? "（固定）" : ""}</span>
+        </label>
+      `
+    )
+    .join("");
+
+  columnSettings.querySelectorAll("input[data-column-key]").forEach((input) => {
+    if (input.disabled) {
+      return;
+    }
+    input.addEventListener("change", (event) => {
+      const key = event.target.dataset.columnKey;
+      state.columnVisibility[key] = event.target.checked;
+      saveColumnVisibility();
+      renderSearch(state.latestSearch);
+    });
+  });
+}
+
+function failureMessage(record) {
+  return [record.error_reason, record.error_message].filter(Boolean).join(": ");
+}
+
+function serviceSummary(record) {
+  if (record.service_summary) {
+    return record.service_summary;
+  }
+  const payload = record.normalized_payload;
+  if (payload && Array.isArray(payload.items)) {
+    const names = [];
+    payload.items.forEach((item) => {
+      const name = item && item.name ? String(item.name).trim() : "";
+      if (name && !names.includes(name)) {
+        names.push(name);
+      }
+    });
+    if (names.length) {
+      return names.join("；");
+    }
+  }
+  return record.service_name || record.item || "";
+}
+
+function renderPreviewCell(record, index) {
+  const disabled = !(record.batch_id && record.page_id);
+  const disabledAttr = disabled ? 'disabled title="缺少 batch_id/page_id"' : "";
+  const thumb = record.thumb_url
+    ? `<img class="thumb-mini" src="${baseUrl}${record.thumb_url}" alt="${escapeHtml(record.page_id || "preview")}" />`
+    : `<div class="thumb-mini" style="display:flex; align-items:center; justify-content:center;">无图</div>`;
+
+  return `
+    <button
+      class="preview-thumb-button search-preview-trigger"
+      type="button"
+      data-index="${index}"
+      ${disabledAttr}
+    >
+      ${thumb}
+    </button>
+    <button
+      class="secondary preview-action search-preview-trigger"
+      type="button"
+      data-index="${index}"
+      ${disabledAttr}
+    >
+      预览
+    </button>
+  `;
 }
 
 function updateSearchModelOptions(modelKeys) {
@@ -237,6 +489,7 @@ function resultPreview(pageId, modelKey) {
     {
       model_key: modelResult.model_key,
       run_id: modelResult.run_id,
+      prompt_version: modelResult.prompt_version,
       status: modelResult.status,
       records: modelResult.records || [],
       issues: modelResult.issues || []
@@ -417,51 +670,39 @@ function collectFilters() {
   return filters;
 }
 
-function renderSearch(items) {
-  state.latestSearch = items;
-  searchMeta.textContent = `命中 ${items.length} 条`;
-  if (!items.length) {
-    searchResults.innerHTML = `<tr><td colspan="11" class="hint">无结果</td></tr>`;
+function renderExportActions(hasRows) {
+  if (!hasRows) {
+    searchExportActions.innerHTML = "";
     return;
   }
+  searchExportActions.innerHTML = `
+    <div class="search-export-actions">
+      <button id="exportCsvButton" class="secondary" type="button">生成 CSV</button>
+      <button id="exportZipButton" class="secondary" type="button">生成 ZIP</button>
+    </div>
+  `;
+  document.getElementById("exportCsvButton").addEventListener("click", () => createExport("csv"));
+  document.getElementById("exportZipButton").addEventListener("click", () => createExport("zip"));
+}
+
+function renderSearch(items) {
+  state.latestSearch = items;
+  const columns = visibleColumns();
+  searchHeaderRow.innerHTML = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("");
+
+  searchMeta.textContent = `命中 ${items.length} 条`;
+  renderExportActions(items.length > 0);
+
+  if (!items.length) {
+    searchResults.innerHTML = `<tr><td colspan="${columns.length}" class="hint">无结果</td></tr>`;
+    return;
+  }
+
   searchResults.innerHTML = items
     .map(
       (item, index) => `
         <tr>
-          <td>
-            <button
-              class="preview-thumb-button search-preview-trigger"
-              type="button"
-              data-index="${index}"
-              data-page-id="${escapeHtml(item.page_id || "")}"
-              data-batch-id="${escapeHtml(item.batch_id || "")}"
-              data-model-key="${escapeHtml(item.model_key || "")}"
-              ${item.batch_id && item.page_id ? "" : "disabled title=\"缺少 batch_id/page_id\""}
-            >
-              <img class="thumb-mini" src="${baseUrl}${item.thumb_url}" alt="${escapeHtml(item.page_id)}" />
-            </button>
-            <button
-              class="secondary preview-action search-preview-trigger"
-              type="button"
-              data-index="${index}"
-              data-page-id="${escapeHtml(item.page_id || "")}"
-              data-batch-id="${escapeHtml(item.batch_id || "")}"
-              data-model-key="${escapeHtml(item.model_key || "")}"
-              ${item.batch_id && item.page_id ? "" : "disabled title=\"缺少 batch_id/page_id\""}
-            >
-              预览
-            </button>
-          </td>
-          <td>${escapeHtml(item.invoice_no || "")}</td>
-          <td>${escapeHtml(item.invoice_date || "")}</td>
-          <td>${escapeHtml(item.model_key || "")}</td>
-          <td>${escapeHtml(item.result_status || "done")}</td>
-          <td>${escapeHtml([item.error_reason, item.error_message].filter(Boolean).join(": "))}</td>
-          <td>${escapeHtml(item.buyer_name || "")}</td>
-          <td>${escapeHtml(item.seller_name || "")}</td>
-          <td>${escapeHtml(item.amount || "")}</td>
-          <td>${escapeHtml(item.tax || "")}</td>
-          <td>${escapeHtml(item.total || "")}</td>
+          ${columns.map((column) => `<td>${column.renderFn(item, index)}</td>`).join("")}
         </tr>
       `
     )
@@ -471,9 +712,10 @@ function renderSearch(items) {
     button.addEventListener("click", () => {
       const record = state.latestSearch[Number(button.dataset.index || "-1")] || {};
       openPreviewModal({
-        batch_id: button.dataset.batchId,
-        page_id: button.dataset.pageId,
-        model_key: button.dataset.modelKey,
+        batch_id: record.batch_id,
+        page_id: record.page_id,
+        model_key: record.model_key,
+        run_id: record.run_id,
         record
       });
     });
@@ -488,6 +730,7 @@ async function searchInvoices() {
     const data = await getJson(url.toString());
     renderSearch(data.items || []);
   } catch (error) {
+    renderSearch([]);
     searchMeta.textContent = `搜索失败：${error.message}`;
   }
 }
@@ -517,8 +760,6 @@ refreshButton.addEventListener("click", () => {
   }
 });
 document.getElementById("searchButton").addEventListener("click", searchInvoices);
-document.getElementById("exportCsvButton").addEventListener("click", () => createExport("csv"));
-document.getElementById("exportZipButton").addEventListener("click", () => createExport("zip"));
 previewCloseButton.addEventListener("click", closePreviewModal);
 previewModal.addEventListener("click", (event) => {
   if (event.target === previewModal) {
@@ -545,7 +786,11 @@ previewImageViewport.addEventListener(
   { passive: false }
 );
 
+state.columnVisibility = loadColumnVisibility();
+renderColumnSettings();
 renderStatus({ steps: [] });
 renderPages({ pages: [], results: [] });
 renderSearch([]);
+searchMeta.textContent = "尚未搜索";
+closePreviewModal();
 loadModels();

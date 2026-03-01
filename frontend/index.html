@@ -35,7 +35,10 @@
             </label>
             <label>
               Prompt
-              <input id="promptVersion" type="text" value="v1" readonly />
+              <select id="promptVersion">
+                <option value="v1">v1</option>
+                <option value="v2">v2</option>
+              </select>
             </label>
           </div>
           <div style="margin-top: 14px;">
@@ -98,30 +101,18 @@
         </div>
         <div class="toolbar">
           <button id="searchButton">搜索</button>
-          <button id="exportCsvButton" class="secondary">生成 CSV</button>
-          <button id="exportZipButton" class="secondary">生成 ZIP</button>
         </div>
         <p class="hint" id="searchMeta">尚未搜索</p>
+        <div class="column-settings" id="columnSettings"></div>
         <div style="overflow:auto; margin-top: 12px;">
           <table>
             <thead>
-              <tr>
-                <th>缩略图</th>
-                <th>发票号</th>
-                <th>日期</th>
-                <th>模型</th>
-                <th>状态</th>
-                <th>失败原因</th>
-                <th>购买方</th>
-                <th>销售方</th>
-                <th>金额</th>
-                <th>税额</th>
-                <th>价税合计</th>
-              </tr>
+              <tr id="searchHeaderRow"></tr>
             </thead>
             <tbody id="searchResults"></tbody>
           </table>
         </div>
+        <div id="searchExportActions"></div>
       </section>
     </div>
 
@@ -139,6 +130,7 @@
               </div>
             </div>
             <div id="previewImageViewport" class="modal-image-viewport">
+              <div id="previewImageHint" class="modal-image-hint">请选择一条识别结果进行预览</div>
               <img id="previewImage" class="modal-image" alt="AI 输入图" />
             </div>
           </div>
@@ -147,6 +139,7 @@
               <div><strong>batch_id:</strong> <span id="previewBatchId">-</span></div>
               <div><strong>page_id:</strong> <span id="previewPageId">-</span></div>
               <div><strong>model_key:</strong> <span id="previewModelKey">-</span></div>
+              <div><strong>run_id:</strong> <span id="previewRunId">-</span></div>
             </div>
             <pre id="previewJson" class="modal-json">{}</pre>
           </div>

@@ -195,6 +195,11 @@ button:disabled {
   background: #fff4df;
 }
 
+.badge.partial {
+  color: var(--warn);
+  background: #fff4df;
+}
+
 .badge.done {
   color: var(--success);
   background: #e8f7ef;
@@ -323,6 +328,37 @@ th {
   margin-top: 12px;
 }
 
+.column-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfcff;
+}
+
+.column-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.column-setting input {
+  width: auto;
+  margin: 0;
+}
+
+.search-export-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -398,6 +434,7 @@ th {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  position: relative;
 }
 
 .modal-image {
@@ -407,6 +444,16 @@ th {
   transition: transform 0.12s ease-out;
   box-shadow: 0 8px 24px rgba(9, 18, 35, 0.14);
   background: #ffffff;
+}
+
+.modal-image-hint {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(9, 18, 35, 0.08);
 }
 
 .modal-info-pane {

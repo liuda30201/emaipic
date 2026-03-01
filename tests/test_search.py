@@ -52,6 +52,9 @@ def setup_table(connection: sqlite3.Connection) -> None:
             buyer TEXT,
             seller TEXT,
             item TEXT,
+            service_summary TEXT,
+            prompt_version TEXT NOT NULL,
+            normalized_payload TEXT,
             amt TEXT,
             tax TEXT,
             total TEXT,
@@ -69,6 +72,7 @@ def setup_table(connection: sqlite3.Connection) -> None:
             page_id TEXT NOT NULL,
             model_key TEXT NOT NULL,
             run_id TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
             status TEXT NOT NULL,
             record_count INTEGER NOT NULL,
             is_invoice_detected INTEGER,
@@ -150,7 +154,7 @@ def setup_table(connection: sqlite3.Connection) -> None:
     )
     connection.executemany(
         """
-        INSERT INTO invoices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO invoices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -164,6 +168,9 @@ def setup_table(connection: sqlite3.Connection) -> None:
                 "采购甲",
                 "销方甲",
                 "服务A",
+                "服务A",
+                "v1",
+                "{\"items\":[{\"name\":\"服务A\"}]}",
                 "100.00",
                 "6.00",
                 "106.00",
@@ -183,6 +190,9 @@ def setup_table(connection: sqlite3.Connection) -> None:
                 "采购甲",
                 "销方甲",
                 "服务A",
+                "服务A",
+                "v1",
+                "{\"items\":[{\"name\":\"服务A\"}]}",
                 "100.00",
                 "6.00",
                 "106.00",
@@ -202,6 +212,9 @@ def setup_table(connection: sqlite3.Connection) -> None:
                 "采购乙",
                 "销方乙",
                 "服务B",
+                "服务B",
+                "v1",
+                "{\"items\":[{\"name\":\"服务B\"}]}",
                 "300.00",
                 "18.00",
                 "318.00",
@@ -214,13 +227,14 @@ def setup_table(connection: sqlite3.Connection) -> None:
     )
     connection.executemany(
         """
-        INSERT INTO model_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO model_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
                 "page_1",
                 "mock",
                 "run_1",
+                "v1",
                 "done",
                 1,
                 1,
@@ -235,6 +249,7 @@ def setup_table(connection: sqlite3.Connection) -> None:
                 "page_1",
                 "glm-ocr",
                 "run_2",
+                "v1",
                 "done",
                 1,
                 1,
@@ -249,6 +264,7 @@ def setup_table(connection: sqlite3.Connection) -> None:
                 "page_2",
                 "mock",
                 "run_3",
+                "v1",
                 "done",
                 1,
                 1,
@@ -263,6 +279,7 @@ def setup_table(connection: sqlite3.Connection) -> None:
                 "page_2",
                 "glm-4.6v-flash",
                 "run_4",
+                "v1",
                 "failed",
                 0,
                 None,

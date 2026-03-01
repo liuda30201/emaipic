@@ -114,15 +114,18 @@ class NormalizedInvoiceRecord(BaseModel):
     model_key: str
     run_id: str
     record_index: int
+    prompt_version: str = "v1"
     is_invoice: bool = False
     num: Optional[str] = None
     date: Optional[str] = None
     item: Optional[str] = None
     buyer: Optional[str] = None
     seller: Optional[str] = None
+    items: list[dict[str, Any]] = Field(default_factory=list)
     amt: Optional[str] = None
     tax: Optional[str] = None
     total: Optional[str] = None
+    normalized_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 PROFILE_PRESETS: dict[str, dict[str, Any]] = {

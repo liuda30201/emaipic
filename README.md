@@ -100,12 +100,15 @@ make down
 
 - 支持 `upload / mock / imap`
 - 支持模型多选（最多 3 个）
+- 支持 `v1 / v2` 两个 prompt 版本
 - 查看每页缩略图
 - 按页切换查看不同模型结果
 - 在识别清单中打开浮窗预览，预览内容固定为 AI 实际收到的 `processed page image`
 - 按 `model_key` 搜索与导出
 - 筛选区可勾选“包含失败记录”，查看失败模型运行
 - 导出支持选择“仅成功”或“全部结果（含失败）”
+- 清单支持列显示设置，固定列不可取消，可选列默认全部勾选并持久化到浏览器
+- “生成 CSV / 生成 ZIP”按钮仅在当前清单有结果时，显示在清单底部
 
 ## 预览与图片代理
 
@@ -136,9 +139,13 @@ http://localhost:3001/api/batches/{batch_id}/pages/{page_id}/image
 - 处理后在 `processed manifest` 中记录：
   - `adaptive_applied`
   - `original_size`
+  - `output_size`
+  - `output_format`
   - `output_quality`
   - `upscale_applied`
-  - `unsharp`
+  - `unsharp_applied`
+  - `sharpness_in`
+  - `sharpness_out`
 
 正常图（`max_edge >= 1600`）仍按原 profile 参数执行，例如 `prod_default` 继续使用原始的 `webp q=75 long_edge=1800`。
 
@@ -178,6 +185,15 @@ http://localhost:3001/api/batches/{batch_id}/pages/{page_id}/image
 - 同一页可查看多模型结果
 - 搜索和导出可指定 `model_key`
 - 勾选“包含失败记录”后，可在筛选结果中看到失败模型及失败原因
+
+## Prompt 版本
+
+- `v1`：兼容原有单行字段输出
+- `v2`：新增 `items` 数组，支持多行明细，`items[].name` 统一承接“项目名称 / 商品名称 / 货物或应税劳务、服务名称”等别名
+- `ai_cleaner` 会把 `v1` 自动兼容成 `items=[{name: ...}]`
+- `normalized_results.jsonl` 每行包含 `prompt_version` 与 `normalized_payload`
+
+导出 ZIP 时，如存在 `items` 明细，还会额外写入 `invoice_items.csv`。
 
 ## API 示例
 

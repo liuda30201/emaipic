@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -84,7 +85,10 @@ def _success_records(connection: sqlite3.Connection, filters: SearchFilters) -> 
             i.date AS invoice_date,
             i.buyer AS buyer_name,
             i.seller AS seller_name,
-            i.item AS service_name,
+            i.service_summary AS service_summary,
+            i.service_summary AS service_name,
+            i.prompt_version,
+            i.normalized_payload,
             i.amt AS amount,
             i.tax,
             i.total,
@@ -135,7 +139,10 @@ def _success_records(connection: sqlite3.Connection, filters: SearchFilters) -> 
                 invoice_date,
                 buyer_name,
                 seller_name,
+                service_summary,
                 service_name,
+                prompt_version,
+                normalized_payload,
                 amount,
                 tax,
                 total,
@@ -178,7 +185,10 @@ def _failed_records(connection: sqlite3.Connection, filters: SearchFilters) -> l
             NULL AS invoice_date,
             NULL AS buyer_name,
             NULL AS seller_name,
+            NULL AS service_summary,
             NULL AS service_name,
+            mr.prompt_version,
+            NULL AS normalized_payload,
             NULL AS amount,
             NULL AS tax,
             NULL AS total,
@@ -203,6 +213,12 @@ def search_invoices(connection: sqlite3.Connection, filters: SearchFilters) -> l
         results.extend(_failed_records(connection, filters))
 
     for item in results:
+        payload = item.get("normalized_payload")
+        if payload:
+            try:
+                item["normalized_payload"] = json.loads(payload)
+            except Exception:
+                item["normalized_payload"] = None
         item["thumb_url"] = f"/api/assets/thumb/{item['batch_id']}/{item['page_id']}"
         item["image_url"] = f"/api/assets/image/{item['batch_id']}/{item['page_id']}"
     return results

@@ -15,6 +15,18 @@ from libs.common.paths import ai_clean_dir, ai_raw_dir, processed_dir
 
 app = create_app("ai_cleaner")
 
+ITEM_NAME_KEYS = [
+    "name",
+    "item",
+    "service_name",
+    "goods_name",
+    "project_name",
+    "商品名称",
+    "项目名称",
+    "货物或应税劳务、服务名称",
+    "货物或应税劳务服务名称",
+]
+
 
 def dispatch_status_path(batch_id: str) -> Path:
     return ai_raw_dir(batch_id) / "status.json"
@@ -160,18 +172,97 @@ def extract_json_array(raw_text: Any) -> tuple[list[dict[str, Any]], list[dict[s
     return [item if isinstance(item, dict) else {} for item in payload], issues
 
 
-def normalize_item(raw: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    issues: list[dict[str, Any]] = []
+def first_present(raw: dict[str, Any], keys: list[str]) -> str | None:
+    for key in keys:
+        value = clean_text(raw.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def summarize_items(items: list[dict[str, Any]]) -> str | None:
+    unique_names: list[str] = []
+    for item in items:
+        name = clean_text(item.get("name"))
+        if name and name not in unique_names:
+            unique_names.append(name)
+    if not unique_names:
+        return None
+    return "；".join(unique_names)
+
+
+def normalize_line_item(raw: Any, issues: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        issues.append({"field": f"items[{index}]", "reason": "invalid_item_type", "raw_value": str(raw)})
+        return None
     normalized = {
+        "name": first_present(raw, ITEM_NAME_KEYS),
+        "spec": first_present(raw, ["spec", "规格型号"]),
+        "unit": first_present(raw, ["unit", "单位"]),
+        "qty": clean_text(raw.get("qty") if "qty" in raw else raw.get("quantity")),
+        "price": normalize_decimal(f"items[{index}].price", raw.get("price"), issues),
+        "amount": normalize_decimal(f"items[{index}].amount", raw.get("amount"), issues),
+        "tax": normalize_decimal(f"items[{index}].tax", raw.get("tax"), issues),
+    }
+    if not any(value is not None for value in normalized.values()):
+        return None
+    return normalized
+
+
+def normalize_items(raw: Any, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    normalized_items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        normalized = normalize_line_item(item, issues, index)
+        if normalized:
+            normalized_items.append(normalized)
+    return normalized_items
+
+
+def normalize_item(raw: dict[str, Any], prompt_version: str = "v1") -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    issues: list[dict[str, Any]] = []
+    items = normalize_items(raw.get("items"), issues)
+    if not items:
+        fallback_name = first_present(raw, ITEM_NAME_KEYS)
+        if fallback_name:
+            items = [
+                {
+                    "name": fallback_name,
+                    "spec": None,
+                    "unit": None,
+                    "qty": None,
+                    "price": None,
+                    "amount": None,
+                    "tax": None,
+                }
+            ]
+
+    normalized_payload = {
         "is_invoice": normalize_bool(raw.get("is_invoice"), issues),
         "num": clean_text(raw.get("num")),
         "date": normalize_date(raw.get("date"), issues),
-        "item": clean_text(raw.get("item")),
         "buyer": clean_text(raw.get("buyer")),
         "seller": clean_text(raw.get("seller")),
+        "items": items,
         "amt": normalize_decimal("amt", raw.get("amt"), issues),
         "tax": normalize_decimal("tax", raw.get("tax"), issues),
         "total": normalize_decimal("total", raw.get("total"), issues),
+    }
+    item_summary = summarize_items(items)
+    normalized = {
+        "prompt_version": prompt_version,
+        "is_invoice": normalized_payload["is_invoice"],
+        "num": normalized_payload["num"],
+        "date": normalized_payload["date"],
+        "item": item_summary,
+        "buyer": normalized_payload["buyer"],
+        "seller": normalized_payload["seller"],
+        "items": items,
+        "amt": normalized_payload["amt"],
+        "tax": normalized_payload["tax"],
+        "total": normalized_payload["total"],
+        "normalized_payload": normalized_payload,
     }
     return normalized, issues
 
@@ -216,6 +307,7 @@ def clean_batch(batch_id: str) -> dict[str, Any]:
             run_records: list[dict[str, Any]] = []
             run_issues: list[dict[str, Any]] = []
             run_status = "done"
+            prompt_version = model_run.get("prompt_version") or dispatch_status.get("prompt_version", "v1")
 
             if model_run.get("status") != "done":
                 run_status = "failed"
@@ -263,7 +355,7 @@ def clean_batch(batch_id: str) -> dict[str, Any]:
                     )
 
                 for index, raw_item in enumerate(parsed_items):
-                    normalized, item_issues = normalize_item(raw_item)
+                    normalized, item_issues = normalize_item(raw_item, prompt_version=prompt_version)
                     record = NormalizedInvoiceRecord(
                         batch_id=batch_id,
                         doc_id=page_summary["doc_id"],
@@ -298,6 +390,7 @@ def clean_batch(batch_id: str) -> dict[str, Any]:
                 {
                     "model_key": model_run["model_key"],
                     "run_id": model_run["run_id"],
+                    "prompt_version": prompt_version,
                     "status": run_status,
                     "records": run_records,
                     "issues": run_issues,
@@ -311,6 +404,7 @@ def clean_batch(batch_id: str) -> dict[str, Any]:
     summary = {
         "batch_id": batch_id,
         "status": "done",
+        "prompt_version": dispatch_status.get("prompt_version", "v1"),
         "record_count": len(normalized_lines),
         "issue_count": len(issue_lines),
         "pages": summary_pages,

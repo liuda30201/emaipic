@@ -32,6 +32,22 @@ total: 价税合计
 示例格式：
 [{"is_invoice":true,"num":"123","date":"2026-03-01","item":"服务","buyer":"A","seller":"B","amt":"100","tax":"6","total":"106"},{"is_invoice":false,"num":"","date":"","item":"","buyer":"","seller":"","amt":"","tax":"","total":""}]"""
 
+PROMPT_V2 = """识别附件内容，按 JSON 数组返回。若非发票，is_invoice 设为 false，其他字段留空字符串，items 返回空数组。禁止输出解释，仅输出 JSON。
+
+字段定义：
+is_invoice: (Boolean) 是否为发票
+num: 发票号码
+date: 日期 (YYYY-MM-DD)
+buyer: 购买方
+seller: 销售方
+items: 明细数组，元素结构为 {name,spec,unit,qty,price,amount,tax}
+amt: 不含税金额
+tax: 税额
+total: 价税合计
+
+示例格式：
+[{"is_invoice":true,"num":"123","date":"2026-03-01","buyer":"A","seller":"B","items":[{"name":"服务","spec":"","unit":"项","qty":"1","price":"100","amount":"100","tax":"6"}],"amt":"100","tax":"6","total":"106"},{"is_invoice":false,"num":"","date":"","buyer":"","seller":"","items":[],"amt":"","tax":"","total":""}]"""
+
 
 class DispatchBody(BaseModel):
     models: list[str] = Field(default_factory=lambda: ["mock"])
@@ -81,12 +97,22 @@ def normalize_models(items: list[str]) -> list[str]:
 
 
 def prompt_for(version: str) -> str:
-    if version != "v1":
-        fail("Only prompt_version=v1 is supported", code="invalid_prompt_version")
-    return PROMPT_V1
+    prompts = {
+        "v1": PROMPT_V1,
+        "v2": PROMPT_V2,
+    }
+    if version not in prompts:
+        fail("Only prompt_version=v1|v2 is supported", code="invalid_prompt_version")
+    return prompts[version]
 
 
-def infer_with_model_hub(model_key: str, prompt: str, page: dict[str, Any], run_id: str) -> tuple[int, dict[str, Any]]:
+def infer_with_model_hub(
+    model_key: str,
+    prompt: str,
+    page: dict[str, Any],
+    run_id: str,
+    prompt_version: str,
+) -> tuple[int, dict[str, Any]]:
     request_body = {
         "model_key": model_key,
         "prompt": prompt,
@@ -97,6 +123,7 @@ def infer_with_model_hub(model_key: str, prompt: str, page: dict[str, Any], run_
             "run_id": run_id,
             "doc_id": page["doc_id"],
             "file_id": page["file_id"],
+            "prompt_version": prompt_version,
         },
     }
     with httpx.Client(timeout=120.0) as client:
@@ -154,7 +181,7 @@ def dispatch_batch(batch_id: str, body: DispatchBody | None = None) -> dict[str,
                 latency_ms = None
                 error_message = "page has no processed image"
             else:
-                status_code, infer_payload = infer_with_model_hub(model_key, prompt, page, run_id)
+                status_code, infer_payload = infer_with_model_hub(model_key, prompt, page, run_id, payload.prompt_version)
                 upstream = infer_payload["payload"]
                 response_payload = {
                     "http_status": status_code,
@@ -182,6 +209,7 @@ def dispatch_batch(batch_id: str, body: DispatchBody | None = None) -> dict[str,
                     "status": run_status,
                     "latency_ms": latency_ms,
                     "error": error_message,
+                    "prompt_version": payload.prompt_version,
                     "request_relpath": str((base_dir / "request.json").relative_to(DATA_ROOT)),
                     "response_relpath": str((base_dir / "response.json").relative_to(DATA_ROOT)),
                 }

@@ -133,18 +133,18 @@ def build_runtime_preset(profile_name: str, image_size: tuple[int, int]) -> dict
     return runtime
 
 
-def save_image(image: Image.Image, target_relpath: Path, runtime_preset: dict[str, Any]) -> str:
+def save_image(image: Image.Image, target_relpath: Path, runtime_preset: dict[str, Any]) -> tuple[str, str, int]:
     target_path = storage.resolve(target_relpath)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         image.save(target_path, format=runtime_preset["format"], quality=runtime_preset["output_quality"])
-        return str(target_relpath)
+        return str(target_relpath), str(runtime_preset["format"]).upper(), int(runtime_preset["output_quality"])
     except OSError:
         fallback_relpath = target_relpath.with_suffix(".jpg")
         fallback_path = storage.resolve(fallback_relpath)
         fallback_quality = max(90 if runtime_preset["adaptive_applied"] else 80, int(runtime_preset["output_quality"]))
         image.save(fallback_path, format="JPEG", quality=fallback_quality)
-        return str(fallback_relpath)
+        return str(fallback_relpath), "JPEG", fallback_quality
 
 
 @app.get("/healthz")
@@ -193,9 +193,13 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
                     "image_url": None,
                     "adaptive_applied": False,
                     "original_size": None,
+                    "output_size": None,
+                    "output_format": None,
                     "output_quality": None,
                     "upscale_applied": False,
-                    "unsharp": False,
+                    "unsharp_applied": False,
+                    "sharpness_in": None,
+                    "sharpness_out": None,
                 }
             )
             issues.append(f"{file_entry['filename']}: {exc}")
@@ -206,7 +210,7 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
             original_size = {"w": working.width, "h": working.height}
             runtime_preset = build_runtime_preset(profile, working.size)
             page_issues: list[str] = []
-            sharpness_before = laplacian_variance(working)
+            sharpness_before = laplacian_variance(working) if runtime_preset["adaptive_applied"] else None
 
             if preset["crop_border"]:
                 working = crop_border(working)
@@ -222,18 +226,24 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
             if runtime_preset["unsharp"]:
                 working = apply_unsharp_mask(working)
 
-            sharpness_after = laplacian_variance(working)
-            if runtime_preset["adaptive_applied"] and sharpness_after < sharpness_before * SHARPNESS_DROP_WARN_RATIO:
+            sharpness_after = laplacian_variance(working) if runtime_preset["adaptive_applied"] else None
+            if (
+                runtime_preset["adaptive_applied"]
+                and sharpness_before is not None
+                and sharpness_after is not None
+                and sharpness_after < sharpness_before * SHARPNESS_DROP_WARN_RATIO
+            ):
                 message = (
                     f"{file_entry['filename']} page {index}: sharpness dropped "
                     f"from {sharpness_before:.2f} to {sharpness_after:.2f}"
                 )
                 issues.append(message)
-                page_issues.append("sharpness_drop_warning")
+                page_issues.append(message)
+                append_batch_log(batch_id, "image_preprocessor", f"warning: {message}")
 
             page_id = new_id("page")
             image_relpath = Path("processed") / batch_id / "pages" / f"{page_id}{preset['extension']}"
-            saved_image_relpath = save_image(working, image_relpath, runtime_preset)
+            saved_image_relpath, output_format, output_quality = save_image(working, image_relpath, runtime_preset)
 
             thumb_relpath = None
             if preset["thumbs"]:
@@ -262,9 +272,13 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
                     "image_url": f"/api/batches/{batch_id}/pages/{page_id}/image",
                     "adaptive_applied": runtime_preset["adaptive_applied"],
                     "original_size": original_size,
-                    "output_quality": runtime_preset["output_quality"],
+                    "output_size": {"w": working.width, "h": working.height},
+                    "output_format": output_format,
+                    "output_quality": output_quality,
                     "upscale_applied": upscale_applied,
-                    "unsharp": runtime_preset["unsharp"],
+                    "unsharp_applied": runtime_preset["unsharp"],
+                    "sharpness_in": round(sharpness_before, 2) if sharpness_before is not None else None,
+                    "sharpness_out": round(sharpness_after, 2) if sharpness_after is not None else None,
                 }
             )
 
