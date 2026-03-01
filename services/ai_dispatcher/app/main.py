@@ -1,21 +1,41 @@
 from __future__ import annotations
 
-import base64
-import json
 import os
-from datetime import date, timedelta
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
 from libs.common.api import create_app, fail, success_response
 from libs.common.config import DATA_ROOT
 from libs.common.ids import new_id
 from libs.common.logging_utils import append_batch_log
 from libs.common.manifests import read_json, write_json_atomic
+from libs.common.models import MODEL_SELECTION_LIMIT
 from libs.common.paths import ai_raw_dir, processed_dir
+
+
+PROMPT_V1 = """识别附件内容，按 JSON 数组返回。若非发票，is_invoice 设为 false 且其余字段留空。禁止输出解释，仅输出 JSON。
+
+字段定义：
+is_invoice: (Boolean) 是否为发票
+num: 发票号码
+date: 日期 (YYYY-MM-DD)
+item: 货物/劳务
+buyer: 购买方
+seller: 销售方
+amt: 不含税金额
+tax: 税额
+total: 价税合计
+
+示例格式：
+[{"is_invoice":true,"num":"123","date":"2026-03-01","item":"服务","buyer":"A","seller":"B","amt":"100","tax":"6","total":"106"},{"is_invoice":false,"num":"","date":"","item":"","buyer":"","seller":"","amt":"","tax":"","total":""}]"""
+
+
+class DispatchBody(BaseModel):
+    models: list[str] = Field(default_factory=lambda: ["mock"])
+    prompt_version: str = "v1"
 
 
 app = create_app("ai_dispatcher")
@@ -27,6 +47,10 @@ def processed_manifest_path(batch_id: str) -> Path:
 
 def status_manifest_path(batch_id: str) -> Path:
     return ai_raw_dir(batch_id) / "status.json"
+
+
+def model_hub_url() -> str:
+    return os.getenv("MODEL_HUB_URL", "http://localhost:3008").rstrip("/")
 
 
 def get_processed_manifest(batch_id: str) -> dict[str, Any]:
@@ -43,78 +67,46 @@ def get_status(batch_id: str) -> dict[str, Any]:
     return manifest
 
 
-def mock_extract(page: dict[str, Any]) -> str:
-    seed = sum(ord(char) for char in page["page_id"])
-    sequence = 10000 + (seed % 89999)
-    invoice_date = date(2026, 1, 1) + timedelta(days=seed % 28)
-    amount = Decimal("88.00") + Decimal(seed % 300)
-    tax = (amount * Decimal("0.06")).quantize(Decimal("0.01"))
-    total = (amount + tax).quantize(Decimal("0.01"))
-    payload = {
-        "invoice_no": f"INV-{sequence}",
-        "invoice_date": invoice_date.isoformat(),
-        "buyer_name": f"测试购买方{seed % 9}",
-        "seller_name": f"测试销售方{seed % 7}",
-        "service_name": f"服务项目{page['page_no']}",
-        "amount": f"{amount:.2f}",
-        "tax": f"{tax:.2f}",
-        "total": f"{total:.2f}",
-    }
-    return json.dumps(payload, ensure_ascii=False)
+def normalize_models(items: list[str]) -> list[str]:
+    models: list[str] = []
+    for item in items:
+        key = str(item).strip()
+        if key and key not in models:
+            models.append(key)
+    if not models:
+        models = ["mock"]
+    if len(models) > MODEL_SELECTION_LIMIT:
+        fail(f"models supports at most {MODEL_SELECTION_LIMIT} entries", code="too_many_models")
+    return models
 
 
-def encode_image_as_data_url(image_path: Path) -> str:
-    mime_type = "image/jpeg"
-    if image_path.suffix.lower() == ".webp":
-        mime_type = "image/webp"
-    raw = image_path.read_bytes()
-    encoded = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
+def prompt_for(version: str) -> str:
+    if version != "v1":
+        fail("Only prompt_version=v1 is supported", code="invalid_prompt_version")
+    return PROMPT_V1
 
 
-def real_extract(page: dict[str, Any], prompt: str) -> tuple[str, str]:
-    provider = os.getenv("MODEL_PROVIDER", "").lower()
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("QWEN_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    model_name = os.getenv("REAL_MODEL_NAME", "gpt-4o-mini")
-    if provider not in {"openai", "qwen"} or not api_key:
-        return mock_extract(page), "mock_fallback"
-
-    image_path = DATA_ROOT / page["image_relpath"]
-    data_url = encode_image_as_data_url(image_path)
+def infer_with_model_hub(model_key: str, prompt: str, page: dict[str, Any], run_id: str) -> tuple[int, dict[str, Any]]:
     request_body = {
-        "model": model_name,
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "system",
-                "content": "Extract invoice fields and return strict JSON only.",
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            },
-        ],
+        "model_key": model_key,
+        "prompt": prompt,
+        "image": {"type": "path", "value": page["image_relpath"]},
+        "meta": {
+            "batch_id": page["batch_id"],
+            "page_id": page["page_id"],
+            "run_id": run_id,
+            "doc_id": page["doc_id"],
+            "file_id": page["file_id"],
+        },
     }
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(f"{model_hub_url()}/api/infer", json=request_body)
+    payload: dict[str, Any]
     try:
-        response = httpx.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=request_body,
-            timeout=60.0,
-        )
-        response.raise_for_status()
         payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
-        if isinstance(content, list):
-            content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
-        return str(content), provider
-    except Exception:
-        return mock_extract(page), "mock_fallback"
+    except ValueError:
+        payload = {"success": False, "data": None, "error": {"message": response.text}}
+    return response.status_code, {"request": request_body, "payload": payload}
 
 
 @app.get("/healthz")
@@ -123,74 +115,118 @@ def healthz() -> dict[str, Any]:
 
 
 @app.post("/api/batches/{batch_id}/dispatch")
-def dispatch_batch(batch_id: str, mode: str = "mock", prompt_version: str = "v1") -> dict[str, Any]:
-    if mode not in {"mock", "real"}:
-        fail("mode must be mock or real")
+def dispatch_batch(batch_id: str, body: DispatchBody | None = None) -> dict[str, Any]:
+    payload = body or DispatchBody()
+    selected_models = normalize_models(payload.models)
+    prompt = prompt_for(payload.prompt_version)
     processed_manifest = get_processed_manifest(batch_id)
+
     page_records: list[dict[str, Any]] = []
+    total_runs = 0
+    failed_runs = 0
+
     for page in processed_manifest.get("pages", []):
-        extraction_id = new_id("ext")
-        base_dir = ai_raw_dir(batch_id) / page["page_id"] / extraction_id
-        base_dir.mkdir(parents=True, exist_ok=True)
-        prompt = (
-            f"prompt_version={prompt_version}. "
-            "Extract invoice_no, invoice_date, buyer_name, seller_name, "
-            "service_name, amount, tax, total."
-        )
-        request_payload = {
-            "batch_id": batch_id,
-            "page_id": page["page_id"],
-            "prompt_version": prompt_version,
-            "mode_requested": mode,
-            "prompt": prompt,
-            "image_relpath": page.get("image_relpath"),
-            "page": page,
-        }
+        model_runs: list[dict[str, Any]] = []
+        for model_key in selected_models:
+            run_id = new_id("run")
+            base_dir = ai_raw_dir(batch_id) / page["page_id"] / model_key / run_id
+            base_dir.mkdir(parents=True, exist_ok=True)
+            request_payload = {
+                "batch_id": batch_id,
+                "doc_id": page["doc_id"],
+                "file_id": page["file_id"],
+                "page_id": page["page_id"],
+                "model_key": model_key,
+                "run_id": run_id,
+                "prompt_version": payload.prompt_version,
+                "prompt": prompt,
+                "image": {"type": "path", "value": page.get("image_relpath")},
+                "page": page,
+            }
 
-        if page.get("status") == "failed" or not page.get("image_relpath"):
-            response_text = json.dumps({})
-            effective_mode = "skipped"
-            status = "failed"
-            error = "page has no processed image"
-        elif mode == "real":
-            response_text, effective_mode = real_extract(page, prompt)
-            status = "done"
-            error = None
-        else:
-            response_text = mock_extract(page)
-            effective_mode = "mock"
-            status = "done"
-            error = None
+            if page.get("status") == "failed" or not page.get("image_relpath"):
+                response_payload = {
+                    "success": False,
+                    "data": None,
+                    "error": {"code": "page_unavailable", "message": "page has no processed image"},
+                }
+                run_status = "failed"
+                latency_ms = None
+                error_message = "page has no processed image"
+            else:
+                status_code, infer_payload = infer_with_model_hub(model_key, prompt, page, run_id)
+                upstream = infer_payload["payload"]
+                response_payload = {
+                    "http_status": status_code,
+                    "upstream": upstream,
+                }
+                if status_code >= 400 or not upstream.get("success", False):
+                    run_status = "failed"
+                    error_message = (upstream.get("error") or {}).get("message", f"Model call failed: {model_key}")
+                    latency_ms = None
+                else:
+                    run_status = "done"
+                    error_message = None
+                    latency_ms = (upstream.get("data") or {}).get("latency_ms")
 
-        response_payload = {
-            "response_text": response_text,
-            "mode_used": effective_mode,
-            "error": error,
-        }
-        write_json_atomic(base_dir / "request.json", request_payload)
-        write_json_atomic(base_dir / "response.json", response_payload)
+            write_json_atomic(base_dir / "request.json", request_payload)
+            write_json_atomic(base_dir / "response.json", response_payload)
+            total_runs += 1
+            if run_status == "failed":
+                failed_runs += 1
+
+            model_runs.append(
+                {
+                    "model_key": model_key,
+                    "run_id": run_id,
+                    "status": run_status,
+                    "latency_ms": latency_ms,
+                    "error": error_message,
+                    "request_relpath": str((base_dir / "request.json").relative_to(DATA_ROOT)),
+                    "response_relpath": str((base_dir / "response.json").relative_to(DATA_ROOT)),
+                }
+            )
+
+        page_status = "done" if any(item["status"] == "done" for item in model_runs) else "failed"
+        if any(item["status"] == "failed" for item in model_runs) and page_status == "done":
+            page_status = "partial"
         page_records.append(
             {
                 "page_id": page["page_id"],
-                "extraction_id": extraction_id,
-                "status": status,
-                "mode_used": effective_mode,
-                "request_relpath": str((base_dir / "request.json").relative_to(DATA_ROOT)),
-                "response_relpath": str((base_dir / "response.json").relative_to(DATA_ROOT)),
-                "error": error,
+                "doc_id": page["doc_id"],
+                "file_id": page["file_id"],
+                "status": page_status,
+                "models": model_runs,
             }
         )
 
     manifest = {
         "batch_id": batch_id,
         "status": "done",
-        "mode_requested": mode,
-        "prompt_version": prompt_version,
+        "prompt_version": payload.prompt_version,
+        "selected_models": selected_models,
+        "summary": {
+            "page_count": len(page_records),
+            "total_runs": total_runs,
+            "failed_runs": failed_runs,
+        },
         "pages": page_records,
     }
     write_json_atomic(status_manifest_path(batch_id), manifest)
-    append_batch_log(batch_id, "ai_dispatcher", f"Dispatched {len(page_records)} pages using mode={mode}.")
-    return success_response({"batch_id": batch_id, "status": "done", "page_count": len(page_records)})
+    append_batch_log(
+        batch_id,
+        "ai_dispatcher",
+        f"Dispatched {len(page_records)} pages across {len(selected_models)} models (failed_runs={failed_runs}).",
+    )
+    return success_response(
+        {
+            "batch_id": batch_id,
+            "status": "done",
+            "page_count": len(page_records),
+            "selected_models": selected_models,
+            "failed_runs": failed_runs,
+        }
+    )
 
 
 @app.get("/api/batches/{batch_id}/status")
@@ -198,9 +234,9 @@ def batch_status(batch_id: str) -> dict[str, Any]:
     return success_response(get_status(batch_id))
 
 
-@app.get("/api/batches/{batch_id}/raw/{page_id}/{extraction_id}")
-def get_raw_payloads(batch_id: str, page_id: str, extraction_id: str) -> dict[str, Any]:
-    base_dir = ai_raw_dir(batch_id) / page_id / extraction_id
+@app.get("/api/batches/{batch_id}/raw/{page_id}/{model_key}/{run_id}")
+def get_raw_payloads(batch_id: str, page_id: str, model_key: str, run_id: str) -> dict[str, Any]:
+    base_dir = ai_raw_dir(batch_id) / page_id / model_key / run_id
     request_payload = read_json(base_dir / "request.json")
     response_payload = read_json(base_dir / "response.json")
     if request_payload is None or response_payload is None:

@@ -5,6 +5,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+MODEL_SELECTION_LIMIT = 3
+
 
 class StepStatus(str, Enum):
     pending = "pending"
@@ -60,10 +62,66 @@ class SearchFilters(BaseModel):
     min_total: Optional[str] = None
     max_total: Optional[str] = None
     batch_id: Optional[str] = None
+    model_key: Optional[str] = None
 
     def compact(self) -> dict[str, Any]:
         data = self.model_dump()
         return {key: value for key, value in data.items() if value not in (None, "")}
+
+
+class ModelDescriptor(BaseModel):
+    key: str
+    label: str
+    provider: str
+    purpose: str
+    enabled: bool = True
+    requires_key: bool = False
+    env_key_name: Optional[str] = None
+    default_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelAvailability(BaseModel):
+    key: str
+    label: str
+    provider: str
+    purpose: str
+    enabled: bool
+    requires_key: bool
+    env_key_name: Optional[str] = None
+    available: bool
+    reason: Optional[str] = None
+    default_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class InferenceImageRef(BaseModel):
+    type: str
+    value: str
+
+
+class ModelInferRequest(BaseModel):
+    model_key: str
+    prompt: str
+    image: InferenceImageRef
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class NormalizedInvoiceRecord(BaseModel):
+    batch_id: str
+    doc_id: str
+    file_id: str
+    page_id: str
+    model_key: str
+    run_id: str
+    record_index: int
+    is_invoice: bool = False
+    num: Optional[str] = None
+    date: Optional[str] = None
+    item: Optional[str] = None
+    buyer: Optional[str] = None
+    seller: Optional[str] = None
+    amt: Optional[str] = None
+    tax: Optional[str] = None
+    total: Optional[str] = None
 
 
 PROFILE_PRESETS: dict[str, dict[str, Any]] = {

@@ -3,7 +3,9 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 pydantic==2.10.6
 python-multipart==0.0.20
+PyYAML==6.0.2
 Pillow==11.1.0
 opencv-python==4.11.0.86
 numpy==2.2.3
 pdf2image==1.17.0
+reportlab==4.3.1

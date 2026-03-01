@@ -1,0 +1,82 @@
+models:
+  - key: mock
+    label: Mock Extractor
+    provider: mock
+    purpose: ocr
+    enabled: true
+    requires_key: false
+    env_key_name: null
+    default_params:
+      temperature: 0
+  - key: glm-ocr
+    label: GLM-OCR
+    provider: glm
+    purpose: ocr
+    enabled: true
+    requires_key: true
+    env_key_name: GLM_API_KEY
+    default_params:
+      temperature: 0
+  - key: glm-4.6v-flash
+    label: GLM-4.6V-Flash
+    provider: glm
+    purpose: vl
+    enabled: true
+    requires_key: true
+    env_key_name: GLM_API_KEY
+    default_params:
+      temperature: 0
+  - key: glm-4.6v-flashx
+    label: GLM-4.6V-FlashX
+    provider: glm
+    purpose: vl
+    enabled: true
+    requires_key: true
+    env_key_name: GLM_API_KEY
+    default_params:
+      temperature: 0
+  - key: glm-4v-flash
+    label: GLM-4V-Flash
+    provider: glm
+    purpose: vl
+    enabled: true
+    requires_key: true
+    env_key_name: GLM_API_KEY
+    default_params:
+      temperature: 0
+  - key: qwen3-vl-plus
+    label: qwen3-vl-plus
+    provider: qwen
+    purpose: vl
+    enabled: true
+    requires_key: true
+    env_key_name: QWEN_API_KEY
+    default_params:
+      temperature: 0
+  - key: qwen3-vl-flash
+    label: qwen3-VL-flash
+    provider: qwen
+    purpose: vl
+    enabled: true
+    requires_key: true
+    env_key_name: QWEN_API_KEY
+    default_params:
+      temperature: 0
+  - key: qwen-vl-plus
+    label: qwen-vl-PLUS
+    provider: qwen
+    purpose: vl
+    enabled: true
+    requires_key: true
+    env_key_name: QWEN_API_KEY
+    default_params:
+      temperature: 0
+  - key: qwen-vl-ocr
+    label: qwen-vl-ocr
+    provider: qwen
+    purpose: ocr
+    enabled: true
+    requires_key: true
+    env_key_name: QWEN_API_KEY
+    default_params:
+      temperature: 0

@@ -24,6 +24,7 @@ services:
       AI_DISPATCHER_URL: http://ai_dispatcher:3005
       AI_CLEANER_URL: http://ai_cleaner:3006
       INDEX_EXPORT_URL: http://index_export:3007
+      MODEL_HUB_URL: http://model_hub:3008
     volumes:
       - ./data:/app/data
     depends_on:
@@ -33,6 +34,7 @@ services:
       - ai_dispatcher
       - ai_cleaner
       - index_export
+      - model_hub
 
   mail_ingestor:
     build:
@@ -84,12 +86,11 @@ services:
       - "3005:3005"
     environment:
       APP_DATA_ROOT: /app/data
-      MODEL_PROVIDER: ${MODEL_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      REAL_MODEL_NAME: ${REAL_MODEL_NAME:-gpt-4o-mini}
+      MODEL_HUB_URL: http://model_hub:3008
     volumes:
       - ./data:/app/data
+    depends_on:
+      - model_hub
 
   ai_cleaner:
     build:
@@ -112,5 +113,21 @@ services:
       - "3007:3007"
     environment:
       APP_DATA_ROOT: /app/data
+    volumes:
+      - ./data:/app/data
+
+  model_hub:
+    build:
+      context: .
+      dockerfile: services/model_hub/Dockerfile
+    container_name: invoice_test_model_hub
+    ports:
+      - "3008:3008"
+    environment:
+      APP_DATA_ROOT: /app/data
+      GLM_API_KEY: ${GLM_API_KEY:-}
+      GLM_BASE_URL: ${GLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
     volumes:
       - ./data:/app/data

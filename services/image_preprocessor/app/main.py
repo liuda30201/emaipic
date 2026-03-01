@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from libs.common.config import DATA_ROOT
 from libs.common.ids import new_id
 from libs.common.logging_utils import append_batch_log
 from libs.common.manifests import read_json, write_json_atomic
-from libs.common.models import PROFILE_PRESETS, ProcessedPage, StepStatus
+from libs.common.models import PROFILE_PRESETS, StepStatus
 from libs.common.paths import processed_dir, staging_dir
 from libs.common.storage import LocalStorage
 
@@ -24,18 +23,18 @@ app = create_app("image_preprocessor")
 storage = LocalStorage()
 
 
-def organize_manifest_path(batch_id: str) -> Path:
-    return staging_dir(batch_id) / "organize_manifest.json"
+def staging_manifest_path(batch_id: str) -> Path:
+    return staging_dir(batch_id) / "staging_manifest.json"
 
 
 def processed_manifest_path(batch_id: str) -> Path:
     return processed_dir(batch_id) / "manifest.json"
 
 
-def get_organize_manifest(batch_id: str) -> dict[str, Any]:
-    manifest = read_json(organize_manifest_path(batch_id))
+def get_staging_manifest(batch_id: str) -> dict[str, Any]:
+    manifest = read_json(staging_manifest_path(batch_id))
     if not manifest:
-        fail(f"organize manifest missing for batch {batch_id}", status_code=404, code="not_found")
+        fail(f"staging manifest missing for batch {batch_id}", status_code=404, code="not_found")
     return manifest
 
 
@@ -61,8 +60,7 @@ def resize_image(image: Image.Image, max_long_edge: int) -> Image.Image:
     if longest <= max_long_edge:
         return image
     ratio = max_long_edge / float(longest)
-    resized = image.resize((int(width * ratio), int(height * ratio)), Image.Resampling.LANCZOS)
-    return resized
+    return image.resize((int(width * ratio), int(height * ratio)), Image.Resampling.LANCZOS)
 
 
 def denoise_image(image: Image.Image) -> Image.Image:
@@ -82,49 +80,18 @@ def load_pages_from_file(file_path: Path) -> list[Image.Image]:
         return [image.convert("RGB")]
 
 
-def save_image(image: Image.Image, target_relpath: Path, profile_name: str) -> tuple[Path, str]:
+def save_image(image: Image.Image, target_relpath: Path, profile_name: str) -> str:
     preset = PROFILE_PRESETS[profile_name]
     target_path = storage.resolve(target_relpath)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         image.save(target_path, format=preset["format"], quality=preset["quality"])
-        return target_path, str(target_relpath)
+        return str(target_relpath)
     except OSError:
         fallback_relpath = target_relpath.with_suffix(".jpg")
         fallback_path = storage.resolve(fallback_relpath)
         image.save(fallback_path, format="JPEG", quality=80)
-        return fallback_path, str(fallback_relpath)
-
-
-def build_page_record(
-    batch_id: str,
-    doc_id: str,
-    file_id: str,
-    page_no: int,
-    original_relpath: str,
-    profile_name: str,
-    image_relpath: str | None,
-    thumb_relpath: str | None,
-    status: StepStatus,
-    issues: list[str],
-) -> dict[str, Any]:
-    page = ProcessedPage(
-        batch_id=batch_id,
-        page_id=new_id("page"),
-        doc_id=doc_id,
-        file_id=file_id,
-        page_no=page_no,
-        profile=profile_name,
-        original_relpath=original_relpath,
-        image_relpath=image_relpath,
-        thumb_relpath=thumb_relpath,
-        status=status,
-        issues=issues,
-    )
-    data = page.model_dump()
-    data["thumb_url"] = f"/api/batches/{batch_id}/pages/{data['page_id']}/thumb" if thumb_relpath else None
-    data["image_url"] = f"/api/batches/{batch_id}/pages/{data['page_id']}/image" if image_relpath else None
-    return data
+        return str(fallback_relpath)
 
 
 @app.get("/healthz")
@@ -136,7 +103,7 @@ def healthz() -> dict[str, Any]:
 def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any]:
     if profile not in PROFILE_PRESETS:
         fail("unknown profile", code="invalid_profile")
-    organize_manifest = get_organize_manifest(batch_id)
+    staging_manifest = get_staging_manifest(batch_id)
     preset = PROFILE_PRESETS[profile]
     pages: list[dict[str, Any]] = []
     issues: list[str] = []
@@ -144,27 +111,34 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
     (batch_processed_dir / "pages").mkdir(parents=True, exist_ok=True)
     (batch_processed_dir / "thumbs").mkdir(parents=True, exist_ok=True)
 
-    for file_entry in organize_manifest.get("files", []):
+    for file_entry in staging_manifest.get("files", []):
         source_path = DATA_ROOT / file_entry["relpath"]
+        if not source_path.exists():
+            issues.append(f"{file_entry['filename']}: staging file missing")
+            continue
         try:
             images = load_pages_from_file(source_path)
         except Exception as exc:
-            message = f"{file_entry['filename']}: {exc}"
-            issues.append(message)
+            page_id = new_id("page")
             pages.append(
-                build_page_record(
-                    batch_id=batch_id,
-                    doc_id=file_entry["doc_id"],
-                    file_id=file_entry["file_id"],
-                    page_no=1,
-                    original_relpath=file_entry["source_relpath"],
-                    profile_name=profile,
-                    image_relpath=None,
-                    thumb_relpath=None,
-                    status=StepStatus.failed,
-                    issues=[str(exc)],
-                )
+                {
+                    "batch_id": batch_id,
+                    "page_id": page_id,
+                    "doc_id": file_entry["doc_id"],
+                    "file_id": file_entry["file_id"],
+                    "page_no": 1,
+                    "profile": profile,
+                    "file_type": file_entry.get("file_type"),
+                    "original_relpath": file_entry["source_relpath"],
+                    "image_relpath": None,
+                    "thumb_relpath": None,
+                    "status": StepStatus.failed.value,
+                    "issues": [str(exc)],
+                    "thumb_url": None,
+                    "image_url": None,
+                }
             )
+            issues.append(f"{file_entry['filename']}: {exc}")
             continue
 
         for index, image in enumerate(images, start=1):
@@ -176,7 +150,7 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
             working = resize_image(working, preset["max_long_edge"])
             page_id = new_id("page")
             image_relpath = Path("processed") / batch_id / "pages" / f"{page_id}{preset['extension']}"
-            _, saved_image_relpath = save_image(working, image_relpath, profile)
+            saved_image_relpath = save_image(working, image_relpath, profile)
 
             thumb_relpath = None
             if preset["thumbs"]:
@@ -186,22 +160,25 @@ def process_batch(batch_id: str, profile: str = "prod_default") -> dict[str, Any
                 thumb.save(storage.resolve(thumb_path), format="JPEG", quality=80)
                 thumb_relpath = str(thumb_path)
 
-            page = ProcessedPage(
-                batch_id=batch_id,
-                page_id=page_id,
-                doc_id=file_entry["doc_id"],
-                file_id=file_entry["file_id"],
-                page_no=index,
-                profile=profile,
-                original_relpath=file_entry["source_relpath"],
-                image_relpath=saved_image_relpath,
-                thumb_relpath=thumb_relpath,
-                status=StepStatus.done,
-                issues=[],
-            ).model_dump()
-            page["thumb_url"] = f"/api/batches/{batch_id}/pages/{page_id}/thumb" if thumb_relpath else None
-            page["image_url"] = f"/api/batches/{batch_id}/pages/{page_id}/image"
-            pages.append(page)
+            pages.append(
+                {
+                    "batch_id": batch_id,
+                    "page_id": page_id,
+                    "doc_id": file_entry["doc_id"],
+                    "file_id": file_entry["file_id"],
+                    "page_no": index,
+                    "profile": profile,
+                    "file_type": file_entry.get("file_type"),
+                    "original_relpath": file_entry["source_relpath"],
+                    "staging_relpath": file_entry["relpath"],
+                    "image_relpath": saved_image_relpath,
+                    "thumb_relpath": thumb_relpath,
+                    "status": StepStatus.done.value,
+                    "issues": [],
+                    "thumb_url": f"/api/batches/{batch_id}/pages/{page_id}/thumb" if thumb_relpath else None,
+                    "image_url": f"/api/batches/{batch_id}/pages/{page_id}/image",
+                }
+            )
 
     manifest = {
         "batch_id": batch_id,

@@ -123,6 +123,44 @@ button:disabled {
   margin-top: 14px;
 }
 
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.model-option {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: #fcfdff;
+}
+
+.model-option.unavailable {
+  opacity: 0.6;
+  background: #f4f6fa;
+}
+
+.model-option input {
+  width: auto;
+  margin: 0 8px 0 0;
+}
+
+.model-option .title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.model-option .meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .status-list {
   display: grid;
   gap: 10px;
@@ -195,6 +233,17 @@ button:disabled {
 
 .page-card .body {
   padding: 12px;
+}
+
+.page-card .result-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+
+.page-card .result-toolbar select {
+  margin-top: 0;
 }
 
 pre {

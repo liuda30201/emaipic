@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import shutil
 import sqlite3
 import zipfile
@@ -11,6 +12,9 @@ from typing import Any
 
 from fastapi import Body
 from fastapi.responses import FileResponse
+from PIL import Image
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 
 from libs.common.api import create_app, fail, success_response
 from libs.common.config import DATA_ROOT
@@ -26,39 +30,143 @@ app = create_app("index_export")
 DB_PATH = db_dir() / "app.db"
 INDEX_STATUS_DIR = db_dir() / "batches"
 
+FILES_COLUMNS = [
+    "file_id",
+    "batch_id",
+    "doc_id",
+    "filename",
+    "original_relpath",
+    "staging_relpath",
+    "content_type",
+    "file_type",
+    "sha256",
+    "size",
+    "created_at",
+]
+PAGES_COLUMNS = [
+    "page_id",
+    "batch_id",
+    "file_id",
+    "doc_id",
+    "page_no",
+    "profile",
+    "image_relpath",
+    "thumb_relpath",
+    "original_relpath",
+    "status",
+    "created_at",
+]
+INVOICES_COLUMNS = [
+    "page_id",
+    "model_key",
+    "run_id",
+    "record_index",
+    "is_invoice",
+    "num",
+    "date",
+    "buyer",
+    "seller",
+    "item",
+    "amt",
+    "tax",
+    "total",
+    "created_at",
+    "batch_id",
+    "file_id",
+    "doc_id",
+]
 
-def ensure_db() -> None:
+
+def table_columns(connection: sqlite3.Connection, table_name: str) -> list[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [row[1] for row in rows]
+
+
+def ensure_schema() -> None:
     INDEX_STATUS_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as connection:
+        expected = {
+            "files": FILES_COLUMNS,
+            "pages": PAGES_COLUMNS,
+            "invoices": INVOICES_COLUMNS,
+        }
+        for table_name, columns in expected.items():
+            existing = table_columns(connection, table_name)
+            if existing and existing != columns:
+                connection.execute(f"DROP TABLE IF EXISTS {table_name}")
+
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS invoices (
+            CREATE TABLE IF NOT EXISTS files (
+                file_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                doc_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                original_relpath TEXT NOT NULL,
+                staging_relpath TEXT NOT NULL,
+                content_type TEXT,
+                file_type TEXT,
+                sha256 TEXT,
+                size INTEGER,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pages (
                 page_id TEXT PRIMARY KEY,
                 batch_id TEXT NOT NULL,
                 file_id TEXT NOT NULL,
                 doc_id TEXT NOT NULL,
                 page_no INTEGER NOT NULL,
+                profile TEXT NOT NULL,
                 image_relpath TEXT,
                 thumb_relpath TEXT,
                 original_relpath TEXT,
-                invoice_no TEXT,
-                invoice_date TEXT,
-                buyer_name TEXT,
-                seller_name TEXT,
-                service_name TEXT,
-                amount TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoices (
+                page_id TEXT NOT NULL,
+                model_key TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                record_index INTEGER NOT NULL,
+                is_invoice INTEGER NOT NULL,
+                num TEXT,
+                date TEXT,
+                buyer TEXT,
+                seller TEXT,
+                item TEXT,
+                amt TEXT,
                 tax TEXT,
                 total TEXT,
-                extraction_id TEXT,
-                indexed_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                batch_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                doc_id TEXT NOT NULL,
+                PRIMARY KEY (page_id, model_key, run_id, record_index)
             )
             """
         )
         connection.commit()
 
 
+def open_connection() -> sqlite3.Connection:
+    ensure_schema()
+    return sqlite3.connect(DB_PATH)
+
+
 def batch_status_path(batch_id: str) -> Path:
     return INDEX_STATUS_DIR / f"{batch_id}.json"
+
+
+def staging_manifest_path(batch_id: str) -> Path:
+    return staging_dir(batch_id) / "staging_manifest.json"
 
 
 def processed_manifest_path(batch_id: str) -> Path:
@@ -66,20 +174,28 @@ def processed_manifest_path(batch_id: str) -> Path:
 
 
 def clean_results_path(batch_id: str) -> Path:
+    return ai_clean_dir(batch_id) / "normalized_results.jsonl"
+
+
+def clean_summary_path(batch_id: str) -> Path:
     return ai_clean_dir(batch_id) / "results.json"
+
+
+def issues_path(batch_id: str) -> Path:
+    return ai_clean_dir(batch_id) / "issues.jsonl"
+
+
+def get_staging_manifest(batch_id: str) -> dict[str, Any]:
+    manifest = read_json(staging_manifest_path(batch_id))
+    if not manifest:
+        fail(f"staging manifest missing for batch {batch_id}", status_code=404, code="not_found")
+    return manifest
 
 
 def get_processed_manifest(batch_id: str) -> dict[str, Any]:
     manifest = read_json(processed_manifest_path(batch_id))
     if not manifest:
         fail(f"processed manifest missing for batch {batch_id}", status_code=404, code="not_found")
-    return manifest
-
-
-def get_clean_results(batch_id: str) -> dict[str, Any]:
-    manifest = read_json(clean_results_path(batch_id))
-    if not manifest:
-        fail(f"clean results missing for batch {batch_id}", status_code=404, code="not_found")
     return manifest
 
 
@@ -90,9 +206,16 @@ def get_batch_status(batch_id: str) -> dict[str, Any]:
     return payload
 
 
-def open_connection() -> sqlite3.Connection:
-    ensure_db()
-    return sqlite3.connect(DB_PATH)
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        fail(f"jsonl file missing: {path.name}", status_code=404, code="not_found")
+    items: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        items.append(json.loads(stripped))
+    return items
 
 
 def export_csv(records: list[dict[str, Any]]) -> str:
@@ -101,10 +224,13 @@ def export_csv(records: list[dict[str, Any]]) -> str:
         output,
         fieldnames=[
             "batch_id",
-            "page_id",
-            "file_id",
             "doc_id",
+            "file_id",
+            "page_id",
             "page_no",
+            "model_key",
+            "run_id",
+            "record_index",
             "invoice_no",
             "invoice_date",
             "buyer_name",
@@ -121,18 +247,51 @@ def export_csv(records: list[dict[str, Any]]) -> str:
     return output.getvalue()
 
 
-def file_for_page(batch_id: str, page_id: str, key: str) -> Path:
-    manifest = get_processed_manifest(batch_id)
-    for page in manifest.get("pages", []):
-        if page["page_id"] == page_id:
-            relpath = page.get(key)
-            if not relpath:
-                fail("asset missing", status_code=404, code="not_found")
-            target = DATA_ROOT / relpath
-            if not target.exists():
-                fail("asset file missing", status_code=404, code="not_found")
-            return target
-    fail("page not found", status_code=404, code="not_found")
+def build_combined_pdf(records: list[dict[str, Any]], target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    unique_pages: dict[str, dict[str, Any]] = {}
+    for record in sorted(records, key=lambda item: (item["batch_id"], item["page_no"], item["page_id"])):
+        unique_pages.setdefault(record["page_id"], record)
+
+    pdf = canvas.Canvas(str(target_path))
+    if not unique_pages:
+        pdf.setFont("Helvetica", 12)
+        pdf.drawString(72, 720, "No invoice pages selected.")
+        pdf.showPage()
+        pdf.save()
+        return
+
+    rendered = 0
+    for record in unique_pages.values():
+        image_path = DATA_ROOT / record["image_relpath"]
+        if not image_path.exists():
+            continue
+        with Image.open(image_path) as image:
+            width, height = image.size
+        pdf.setPageSize((width, height))
+        pdf.drawImage(ImageReader(str(image_path)), 0, 0, width=width, height=height)
+        pdf.showPage()
+        rendered += 1
+    if rendered == 0:
+        pdf.setFont("Helvetica", 12)
+        pdf.drawString(72, 720, "No rendered invoice pages available.")
+        pdf.showPage()
+    pdf.save()
+
+
+def lookup_page_asset(batch_id: str, page_id: str, column_name: str) -> Path:
+    with open_connection() as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            f"SELECT {column_name} AS relpath FROM pages WHERE batch_id = ? AND page_id = ?",
+            (batch_id, page_id),
+        ).fetchone()
+    if not row or not row["relpath"]:
+        fail("asset not found", status_code=404, code="not_found")
+    target = DATA_ROOT / row["relpath"]
+    if not target.exists():
+        fail("asset file missing", status_code=404, code="not_found")
+    return target
 
 
 def create_export_bundle(export_id: str, records: list[dict[str, Any]], filters: SearchFilters) -> dict[str, str]:
@@ -141,12 +300,18 @@ def create_export_bundle(export_id: str, records: list[dict[str, Any]], filters:
         shutil.rmtree(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
     csv_path = export_dir / "invoices.csv"
+    combined_pdf_path = export_dir / "pdf" / "combined.pdf"
     zip_path = export_dir / "bundle.zip"
+
     csv_path.write_text(export_csv(records), encoding="utf-8")
+    build_combined_pdf(records, combined_pdf_path)
 
     added_files: set[str] = set()
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(csv_path, "invoices.csv")
+        if combined_pdf_path.exists():
+            archive.write(combined_pdf_path, "pdf/combined.pdf")
+
         for record in records:
             image_path = DATA_ROOT / record["image_relpath"] if record.get("image_relpath") else None
             if image_path and image_path.exists():
@@ -164,8 +329,10 @@ def create_export_bundle(export_id: str, records: list[dict[str, Any]], filters:
         for batch_id in sorted({record["batch_id"] for record in records}):
             candidate_manifests = [
                 raw_dir(batch_id) / "ingest_manifest.json",
-                staging_dir(batch_id) / "organize_manifest.json",
+                staging_dir(batch_id) / "staging_manifest.json",
                 processed_dir(batch_id) / "manifest.json",
+                ai_clean_dir(batch_id) / "normalized_results.jsonl",
+                ai_clean_dir(batch_id) / "issues.jsonl",
                 ai_clean_dir(batch_id) / "results.json",
             ]
             for manifest in candidate_manifests:
@@ -179,12 +346,13 @@ def create_export_bundle(export_id: str, records: list[dict[str, Any]], filters:
         "filters": filters.model_dump(),
         "csv_relpath": str(csv_path.relative_to(DATA_ROOT)),
         "zip_relpath": str(zip_path.relative_to(DATA_ROOT)),
+        "combined_pdf_relpath": str(combined_pdf_path.relative_to(DATA_ROOT)),
     }
     write_json_atomic(export_dir / "meta.json", meta)
-    return {"csv": str(csv_path), "zip": str(zip_path)}
+    return {"csv": str(csv_path), "zip": str(zip_path), "combined_pdf": str(combined_pdf_path)}
 
 
-ensure_db()
+ensure_schema()
 
 
 @app.get("/healthz")
@@ -194,40 +362,47 @@ def healthz() -> dict[str, Any]:
 
 @app.post("/api/batches/{batch_id}/index")
 def index_batch(batch_id: str) -> dict[str, Any]:
+    staging_manifest = get_staging_manifest(batch_id)
     processed_manifest = get_processed_manifest(batch_id)
-    clean_results = get_clean_results(batch_id)
-    results_by_page = {item["page_id"]: item for item in clean_results.get("pages", [])}
+    normalized_records = read_jsonl(clean_results_path(batch_id))
+    clean_summary = read_json(clean_summary_path(batch_id), default={}) or {}
     indexed_at = datetime.utcnow().isoformat()
 
     with open_connection() as connection:
-        for page in processed_manifest.get("pages", []):
-            result = results_by_page.get(page["page_id"], {})
-            normalized = result.get("normalized", {})
+        connection.execute("DELETE FROM invoices WHERE batch_id = ?", (batch_id,))
+        connection.execute("DELETE FROM pages WHERE batch_id = ?", (batch_id,))
+        connection.execute("DELETE FROM files WHERE batch_id = ?", (batch_id,))
+
+        for file_entry in staging_manifest.get("files", []):
             connection.execute(
                 """
-                INSERT INTO invoices (
-                    page_id, batch_id, file_id, doc_id, page_no, image_relpath, thumb_relpath,
-                    original_relpath, invoice_no, invoice_date, buyer_name, seller_name,
-                    service_name, amount, tax, total, extraction_id, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(page_id) DO UPDATE SET
-                    batch_id=excluded.batch_id,
-                    file_id=excluded.file_id,
-                    doc_id=excluded.doc_id,
-                    page_no=excluded.page_no,
-                    image_relpath=excluded.image_relpath,
-                    thumb_relpath=excluded.thumb_relpath,
-                    original_relpath=excluded.original_relpath,
-                    invoice_no=excluded.invoice_no,
-                    invoice_date=excluded.invoice_date,
-                    buyer_name=excluded.buyer_name,
-                    seller_name=excluded.seller_name,
-                    service_name=excluded.service_name,
-                    amount=excluded.amount,
-                    tax=excluded.tax,
-                    total=excluded.total,
-                    extraction_id=excluded.extraction_id,
-                    indexed_at=excluded.indexed_at
+                INSERT INTO files (
+                    file_id, batch_id, doc_id, filename, original_relpath, staging_relpath,
+                    content_type, file_type, sha256, size, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file_entry["file_id"],
+                    batch_id,
+                    file_entry["doc_id"],
+                    file_entry["filename"],
+                    file_entry["source_relpath"],
+                    file_entry["relpath"],
+                    file_entry.get("content_type"),
+                    file_entry.get("file_type"),
+                    file_entry.get("sha256"),
+                    file_entry.get("size"),
+                    indexed_at,
+                ),
+            )
+
+        for page in processed_manifest.get("pages", []):
+            connection.execute(
+                """
+                INSERT INTO pages (
+                    page_id, batch_id, file_id, doc_id, page_no, profile, image_relpath,
+                    thumb_relpath, original_relpath, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     page["page_id"],
@@ -235,32 +410,56 @@ def index_batch(batch_id: str) -> dict[str, Any]:
                     page["file_id"],
                     page["doc_id"],
                     page["page_no"],
+                    page["profile"],
                     page.get("image_relpath"),
                     page.get("thumb_relpath"),
                     page.get("original_relpath"),
-                    normalized.get("invoice_no"),
-                    normalized.get("invoice_date"),
-                    normalized.get("buyer_name"),
-                    normalized.get("seller_name"),
-                    normalized.get("service_name"),
-                    normalized.get("amount"),
-                    normalized.get("tax"),
-                    normalized.get("total"),
-                    result.get("extraction_id"),
+                    page.get("status", "done"),
                     indexed_at,
+                ),
+            )
+
+        for record in normalized_records:
+            connection.execute(
+                """
+                INSERT INTO invoices (
+                    page_id, model_key, run_id, record_index, is_invoice, num, date, buyer,
+                    seller, item, amt, tax, total, created_at, batch_id, file_id, doc_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["page_id"],
+                    record["model_key"],
+                    record["run_id"],
+                    record["record_index"],
+                    1 if record.get("is_invoice") else 0,
+                    record.get("num"),
+                    record.get("date"),
+                    record.get("buyer"),
+                    record.get("seller"),
+                    record.get("item"),
+                    record.get("amt"),
+                    record.get("tax"),
+                    record.get("total"),
+                    indexed_at,
+                    batch_id,
+                    record["file_id"],
+                    record["doc_id"],
                 ),
             )
         connection.commit()
 
-    indexed_records = len(processed_manifest.get("pages", []))
     status = {
         "batch_id": batch_id,
         "status": "done",
-        "record_count": indexed_records,
+        "file_count": len(staging_manifest.get("files", [])),
+        "page_count": len(processed_manifest.get("pages", [])),
+        "record_count": len(normalized_records),
+        "issue_count": clean_summary.get("issue_count", 0),
         "indexed_at": indexed_at,
     }
     write_json_atomic(batch_status_path(batch_id), status)
-    append_batch_log(batch_id, "index_export", f"Indexed {indexed_records} records into SQLite.")
+    append_batch_log(batch_id, "index_export", f"Indexed {len(normalized_records)} normalized records.")
     return success_response(status)
 
 
@@ -279,6 +478,7 @@ def search_endpoint(
     min_total: str | None = None,
     max_total: str | None = None,
     batch_id: str | None = None,
+    model_key: str | None = None,
 ) -> dict[str, Any]:
     filters = SearchFilters(
         start_date=start_date,
@@ -289,6 +489,7 @@ def search_endpoint(
         min_total=min_total,
         max_total=max_total,
         batch_id=batch_id,
+        model_key=model_key,
     )
     with open_connection() as connection:
         records = search_invoices(connection, filters)
@@ -330,9 +531,9 @@ def download_zip(export_id: str) -> FileResponse:
 
 @app.get("/api/assets/thumb/{batch_id}/{page_id}")
 def asset_thumb(batch_id: str, page_id: str) -> FileResponse:
-    return FileResponse(file_for_page(batch_id, page_id, "thumb_relpath"))
+    return FileResponse(lookup_page_asset(batch_id, page_id, "thumb_relpath"))
 
 
 @app.get("/api/assets/image/{batch_id}/{page_id}")
 def asset_image(batch_id: str, page_id: str) -> FileResponse:
-    return FileResponse(file_for_page(batch_id, page_id, "image_relpath"))
+    return FileResponse(lookup_page_asset(batch_id, page_id, "image_relpath"))

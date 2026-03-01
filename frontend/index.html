@@ -34,12 +34,16 @@
               </select>
             </label>
             <label>
-              模型模式
-              <select id="mode">
-                <option value="mock">mock</option>
-                <option value="real">real</option>
-              </select>
+              Prompt
+              <input id="promptVersion" type="text" value="v1" readonly />
             </label>
+          </div>
+          <div style="margin-top: 14px;">
+            <div style="display:flex; justify-content:space-between; gap:12px; align-items:center;">
+              <label style="margin:0;">模型多选（最多 3 个）</label>
+              <span class="hint" id="modelSelectionHint">已选 0 / 3</span>
+            </div>
+            <div class="model-grid" id="modelList"></div>
           </div>
           <label style="margin-top: 12px;">
             本地文件（仅 upload 模式）
@@ -74,6 +78,12 @@
           <label>购买方<input id="buyer" type="text" placeholder="购买方" /></label>
           <label>销售方<input id="seller" type="text" placeholder="销售方" /></label>
           <label>批次号<input id="searchBatchId" type="text" placeholder="可留空" /></label>
+          <label>
+            模型
+            <select id="searchModelKey">
+              <option value="">主模型（默认）</option>
+            </select>
+          </label>
         </div>
         <div class="toolbar">
           <button id="searchButton">搜索</button>
@@ -88,6 +98,7 @@
                 <th>缩略图</th>
                 <th>发票号</th>
                 <th>日期</th>
+                <th>模型</th>
                 <th>购买方</th>
                 <th>销售方</th>
                 <th>金额</th>

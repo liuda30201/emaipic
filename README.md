@@ -1,6 +1,6 @@
 # 发票自动化处理测试系统
 
-一个可本地一键跑通的端到端发票自动化处理测试项目。默认使用模拟邮箱和 Mock 模型，不需要额外配置即可完成完整测试闭环。
+一个可本地一键跑通的端到端发票自动化处理测试项目。默认使用模拟邮箱和 `mock` 模型，无需任何 API key，即可完成上传/拉取、整理、预处理、多模型对比、清洗、索引、查询和导出闭环。
 
 ## 端口规划
 
@@ -12,75 +12,72 @@
 - ai_dispatcher：`3005`
 - ai_cleaner：`3006`
 - index_export：`3007`
+- model_hub：`3008`
 
-这样所有公开端口都从 `3000` 连续递增，避免和其他常见开发端口冲突。
+## 核心流程
 
-## 项目结构
+系统按以下 6 步执行：
 
-```text
-.
-├── Makefile
-├── README.md
-├── docker-compose.yml
-├── frontend
-│   ├── Dockerfile
-│   ├── app.js
-│   ├── config.js
-│   ├── index.html
-│   └── styles.css
-├── libs
-│   └── common
-│       ├── api.py
-│       ├── config.py
-│       ├── ids.py
-│       ├── logging_utils.py
-│       ├── manifests.py
-│       ├── models.py
-│       ├── paths.py
-│       ├── sample_data.py
-│       └── storage.py
-├── samples
-│   └── mailbox
-│       ├── README.md
-│       ├── attachments
-│       ├── mail_001.json
-│       └── mail_002.json
-├── scripts
-│   └── seed.py
-├── services
-│   ├── ai_cleaner
-│   ├── ai_dispatcher
-│   ├── attachment_organizer
-│   ├── image_preprocessor
-│   ├── index_export
-│   ├── mail_ingestor
-│   └── orchestrator
-└── tests
-    ├── test_manifests.py
-    ├── test_models.py
-    └── test_search.py
+1. `mail_ingestor` 拉取模拟邮箱/IMAP，或接收本地批量上传
+2. `attachment_organizer` 归类并输出 `data/staging/{batch_id}/staging_manifest.json`
+3. `image_preprocessor` 统一转成页图并输出 `data/processed/{batch_id}/manifest.json`
+4. `ai_dispatcher` 按每页 x 每模型调度 `model_hub`
+5. `ai_cleaner` 清洗结果并输出 `data/ai_clean/{batch_id}/normalized_results.jsonl`
+6. `index_export` 建立 SQLite 索引并提供查询/CSV/ZIP 导出
+
+## 模型库
+
+`model_hub` 是独立服务，使用 [services/model_hub/models.yaml](/Users/liuqiang/Documents/github/Project/发票链路测试/services/model_hub/models.yaml) 管理模型列表。
+
+预置模型：
+
+- `mock` / Mock Extractor
+- `glm-ocr`
+- `glm-4.6v-flash`
+- `glm-4.6v-flashx`
+- `glm-4v-flash`
+- `qwen3-vl-plus`
+- `qwen3-vl-flash`
+- `qwen-vl-plus`
+- `qwen-vl-ocr`
+
+规则：
+
+- `mock` 默认永远可用
+- GLM/Qwen 模型在缺少 key 时会出现在前端，但显示为 unavailable
+- 前端最多允许勾选 3 个模型，后端也会校验
+
+### 环境变量
+
+可选真实模型配置：
+
+```bash
+GLM_API_KEY=
+GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+QWEN_API_KEY=
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
+
+未配置时不影响默认 mock 路径。
 
 ## 一键启动
 
-### 方式一：Docker Compose
+### Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-启动后访问：
+启动后：
 
 - 前端：[http://localhost:3000](http://localhost:3000)
-- 网关 Swagger：[http://localhost:3001/docs](http://localhost:3001/docs)
+- orchestrator docs：[http://localhost:3001/docs](http://localhost:3001/docs)
 
-### 方式二：Makefile
+### Makefile
 
 ```bash
 make up
 ```
-
-`make up` 会先执行样例数据生成，再启动全部容器。
 
 停止：
 
@@ -88,105 +85,117 @@ make up
 make down
 ```
 
-## Mock 模式演示
+## 前端使用
 
-1. 打开前端页面。
-2. 来源选择 `模拟邮箱`。
-3. 点击 `Run Full Pipeline`。
-4. 前端会轮询显示 `ingest -> organize -> process -> dispatch -> clean -> index` 每一步状态。
-5. 处理完成后可查看每页缩略图、原图和标准化 JSON。
-6. 在筛选区按日期、发票号、购买方、销售方搜索。
-7. 点击生成 `CSV` 或 `ZIP` 下载导出结果。
+前端默认自动跟随当前访问主机，按 `http://当前主机:3001` 访问 orchestrator。
 
-默认数据来自 `samples/mailbox/`，若附件图片不存在，会在第一次运行时自动生成简易“测试发票样张图”。
+例如：
 
-## 本地上传演示
+- 通过 `http://localhost:3000` 打开时，请求 `http://localhost:3001`
+- 通过 `http://192.168.1.10:3000` 打开时，请求 `http://192.168.1.10:3001`
 
-1. 来源选择 `本地上传`。
-2. 选择一张或多张图片/PDF。
-3. 点击 `Run Full Pipeline`。
-4. 系统会先上传到 `mail_ingestor`，再自动执行后续链路。
+因此局域网 IP 访问不会再因为写死 `localhost` 导致 `Failed to fetch`。
 
-## 真实邮箱 IMAP（可选）
+前端功能：
 
-在环境变量或 `.env` 中配置：
+- 支持 `upload / mock / imap`
+- 支持模型多选（最多 3 个）
+- 查看每页缩略图
+- 按页切换查看不同模型结果
+- 按 `model_key` 搜索与导出
+
+## 默认验收路径
+
+### 1. 本地上传 + mock
+
+1. 打开前端
+2. 选择来源 `本地上传`
+3. 选择 1 张或多张图片/PDF
+4. 勾选模型 `mock`
+5. 点击 `Run Full Pipeline`
+
+预期：
+
+- 批次完成
+- 可以看到页图和 `mock` 结果
+- 搜索可命中
+- 可导出 CSV 和 ZIP
+
+### 2. 模拟邮箱 + mock
+
+1. 选择来源 `模拟邮箱`
+2. 勾选模型 `mock`
+3. 点击 `Run Full Pipeline`
+
+预期：默认样例能完整跑通。
+
+### 3. 勾选 GLM/Qwen 但未配置 key
+
+预期：模型列表显示为 unavailable，前端复选框置灰；即使只使用 `mock`，全链路仍正常。
+
+### 4. 勾选 2~3 个模型
+
+预期：
+
+- 同一页可查看多模型结果
+- 搜索和导出可指定 `model_key`
+
+## API 示例
+
+### 列出模型
 
 ```bash
-IMAP_HOST=imap.example.com
-IMAP_PORT=993
-IMAP_USERNAME=your_account
-IMAP_PASSWORD=your_password
-IMAP_FOLDER=INBOX
+curl "http://localhost:3001/api/models"
 ```
 
-然后在前端将来源切换为 `真实 IMAP`，或调用：
+### mock 邮箱完整运行
 
 ```bash
-curl -X POST "http://localhost:3001/api/run/full?source=imap&profile=prod_default&mode=mock"
+curl -X POST "http://localhost:3001/api/run/full" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"mock","profile":"prod_default","models":["mock"],"prompt_version":"v1"}'
 ```
 
-如果 IMAP 未配置，系统会返回明确错误，不会影响默认 mock 路径。
-
-## Real 模型配置（可选）
-
-未配置 key 时，`ai_dispatcher` 会自动回退到 mock，不会导致整条链路失败。
-
-示例：
+### 本地上传并运行（可直接复制）
 
 ```bash
-MODEL_PROVIDER=openai
-OPENAI_API_KEY=your_key
-OPENAI_BASE_URL=https://api.openai.com/v1
-REAL_MODEL_NAME=gpt-4o-mini
-```
-
-然后在前端将模型模式切换为 `real`，或调用：
-
-```bash
-curl -X POST "http://localhost:3001/api/run/full?source=mock&profile=prod_default&mode=real"
+curl -X POST "http://localhost:3001/api/run/upload" \
+  -F 'profile=prod_default' \
+  -F 'prompt_version=v1' \
+  -F 'models=["mock"]' \
+  -F 'files=@samples/mailbox/attachments/invoice_alpha.ppm;type=image/x-portable-pixmap'
 ```
 
 ## 数据目录
 
-所有服务默认共享本地 `./data`：
-
 ```text
 data/
 ├── ai_clean/
+│   └── {batch_id}/
+│       ├── issues.jsonl
+│       ├── normalized_results.jsonl
+│       └── results.json
 ├── ai_raw/
 ├── db/
+│   └── app.db
 ├── exports/
 ├── logs/
 ├── processed/
+│   └── {batch_id}/manifest.json
 ├── raw/
 └── staging/
+    └── {batch_id}/staging_manifest.json
 ```
 
-其中：
+## 导出内容
 
-- 每个 batch 的链路日志在 `data/logs/{batch_id}/run.log`
-- SQLite 数据库在 `data/db/app.db`
-- 导出文件在 `data/exports/{export_id}/`
+ZIP 内包含：
 
-## 关键 API
-
-- `POST /api/run/full`
-- `POST /api/run/upload`
-- `GET /api/batches/{batch_id}/status`
-- `GET /api/invoices/search`
-- `POST /api/exports`
-- `GET /api/exports/{export_id}/csv`
-- `GET /api/exports/{export_id}/zip`
-
-统一返回格式：
-
-```json
-{
-  "success": true,
-  "data": {},
-  "error": null
-}
-```
+- `invoices.csv`
+- `originals/` 原始附件
+- `images/` 选中页标准图
+- `pdf/combined.pdf` 选中页图合成的 PDF
+- `manifests/` 相关 manifest 与 JSONL
 
 ## 测试
 
@@ -196,35 +205,25 @@ python -m pytest
 
 覆盖内容：
 
-- `pydantic schema` 基础校验
-- `manifest` 原子写读
-- `search` 过滤逻辑
+- `models.yaml` 加载与模型可用性判断
+- `ai_cleaner` JSON 数组修复与字段归一
+- `index_export` 搜索支持 `model_key`
+- 共享 schema/manifest 基础能力
 
 ## 常见问题
 
-### 1. webp 不可用怎么办
+### WebP 不可用
 
-某些环境下 Pillow 可能未启用 WebP。`image_preprocessor` 会在保存 `.webp` 失败时自动回退为 `.jpg`，不会影响默认流程。
+若 Pillow 当前环境未启用 WebP，`image_preprocessor` 会自动回退为 `.jpg`。
 
-### 2. PDF 转图依赖什么
+### PDF 转图依赖
 
-项目使用 `pdf2image + poppler`。Docker 镜像内已安装 `poppler-utils`，容器里默认可用。
+项目使用 `pdf2image + poppler`。`image_preprocessor` Docker 镜像已安装 `poppler-utils`。
 
-### 3. OFD 为什么没有直接支持
+### OFD
 
-OFD 被做成可插拔适配器。默认实现会返回 `unsupported`，不会阻塞其他图片/PDF 文件的处理。
+OFD 仍为可插拔适配器。默认返回 `unsupported`，不会影响图片/PDF 路径。
 
-### 4. 为什么没有 Redis/Celery
+### 为什么没有 Redis/Celery
 
-为了低配服务器友好，`orchestrator` 使用进程内 `queue.Queue + daemon worker thread` 完成串行调度，并将批次状态持久化到本地文件。
-
-## 默认闭环说明
-
-默认无任何外部依赖：
-
-- 邮件来源：本地 mock 邮箱
-- 模型：Mock JSON 提取器
-- 存储：本地文件系统
-- 数据库：SQLite
-
-因此只要容器能启动，默认链路即可完整跑通。
+为了低配服务器友好，`orchestrator` 使用进程内 `queue.Queue + daemon worker thread` 串行调度，并把状态持久化到本地文件。

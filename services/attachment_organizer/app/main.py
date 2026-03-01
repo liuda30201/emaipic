@@ -5,6 +5,7 @@ from typing import Any
 
 from libs.common.api import create_app, fail, success_response
 from libs.common.config import DATA_ROOT
+from libs.common.hashing import sha256_file
 from libs.common.logging_utils import append_batch_log
 from libs.common.manifests import read_json, write_json_atomic
 from libs.common.paths import raw_dir, staging_dir
@@ -19,8 +20,8 @@ def ingest_manifest_path(batch_id: str) -> Path:
     return raw_dir(batch_id) / "ingest_manifest.json"
 
 
-def organize_manifest_path(batch_id: str) -> Path:
-    return staging_dir(batch_id) / "organize_manifest.json"
+def staging_manifest_path(batch_id: str) -> Path:
+    return staging_dir(batch_id) / "staging_manifest.json"
 
 
 def get_ingest_manifest(batch_id: str) -> dict[str, Any]:
@@ -30,10 +31,10 @@ def get_ingest_manifest(batch_id: str) -> dict[str, Any]:
     return manifest
 
 
-def get_organize_manifest(batch_id: str) -> dict[str, Any]:
-    manifest = read_json(organize_manifest_path(batch_id))
+def get_staging_manifest(batch_id: str) -> dict[str, Any]:
+    manifest = read_json(staging_manifest_path(batch_id))
     if not manifest:
-        fail(f"organize manifest missing for batch {batch_id}", status_code=404, code="not_found")
+        fail(f"staging manifest missing for batch {batch_id}", status_code=404, code="not_found")
     return manifest
 
 
@@ -53,16 +54,19 @@ def organize_batch(batch_id: str) -> dict[str, Any]:
             fail(f"raw file missing: {source_path}", status_code=500, code="missing_raw")
         extension = Path(file_entry["filename"]).suffix.lower() or ".bin"
         target_relpath = Path("staging") / batch_id / "files" / file_entry["doc_id"] / f"{file_entry['file_id']}{extension}"
-        storage.copy_to(source_path, target_relpath)
+        target_path = storage.copy_to(source_path, target_relpath)
         files.append(
             {
                 "file_id": file_entry["file_id"],
                 "doc_id": file_entry["doc_id"],
                 "filename": file_entry["filename"],
                 "content_type": file_entry["content_type"],
+                "file_type": extension.lstrip(".") or "bin",
+                "sha256": sha256_file(target_path),
+                "size": file_entry.get("size", source_path.stat().st_size),
                 "source_relpath": file_entry["relpath"],
                 "relpath": str(target_relpath),
-                "extension": extension,
+                "path": str(target_relpath),
             }
         )
     manifest = {
@@ -72,11 +76,11 @@ def organize_batch(batch_id: str) -> dict[str, Any]:
         "files": files,
         "notes": ["Attachments normalized into staging layout."],
     }
-    write_json_atomic(organize_manifest_path(batch_id), manifest)
+    write_json_atomic(staging_manifest_path(batch_id), manifest)
     append_batch_log(batch_id, "attachment_organizer", f"Organized {len(files)} files into staging.")
     return success_response({"batch_id": batch_id, "status": "done", "file_count": len(files)})
 
 
 @app.get("/api/batches/{batch_id}")
 def get_batch(batch_id: str) -> dict[str, Any]:
-    return success_response(get_organize_manifest(batch_id))
+    return success_response(get_staging_manifest(batch_id))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
@@ -7,12 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import File, Request, UploadFile
+from fastapi import File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from libs.common.api import create_app, fail, success_response
 from libs.common.logging_utils import append_batch_log
 from libs.common.manifests import read_json, write_json_atomic
+from libs.common.models import MODEL_SELECTION_LIMIT
 from libs.common.paths import db_dir
 
 
@@ -20,14 +22,7 @@ app = create_app("orchestrator", enable_cors=True)
 STATUS_DIR = db_dir() / "orchestrator"
 STATUS_DIR.mkdir(parents=True, exist_ok=True)
 
-STEP_ORDER = [
-    "ingest",
-    "organize",
-    "process",
-    "dispatch",
-    "clean",
-    "index",
-]
+STEP_ORDER = ["ingest", "organize", "process", "dispatch", "clean", "index"]
 
 job_queue: queue.Queue[dict[str, Any]] = queue.Queue()
 worker_started = False
@@ -42,6 +37,7 @@ def service_url(name: str) -> str:
         "ai_dispatcher": "http://localhost:3005",
         "ai_cleaner": "http://localhost:3006",
         "index_export": "http://localhost:3007",
+        "model_hub": "http://localhost:3008",
     }
     env_name = f"{name.upper()}_URL"
     return os.getenv(env_name, defaults[name]).rstrip("/")
@@ -86,7 +82,7 @@ def set_step(batch_id: str, step_name: str, status: str, detail: str | None = No
 
 
 def client() -> httpx.Client:
-    return httpx.Client(timeout=120.0)
+    return httpx.Client(timeout=180.0)
 
 
 def extract_data(response: httpx.Response) -> Any:
@@ -103,12 +99,26 @@ def call_json(method: str, url: str, **kwargs: Any) -> Any:
     return extract_data(response)
 
 
-def init_batch_status(batch_id: str, source: str, profile: str, mode: str) -> dict[str, Any]:
+def normalize_models(items: list[str] | None) -> list[str]:
+    models: list[str] = []
+    for item in items or ["mock"]:
+        key = str(item).strip()
+        if key and key not in models:
+            models.append(key)
+    if not models:
+        models = ["mock"]
+    if len(models) > MODEL_SELECTION_LIMIT:
+        fail(f"models supports at most {MODEL_SELECTION_LIMIT} entries", code="too_many_models")
+    return models
+
+
+def init_batch_status(batch_id: str, source: str, profile: str, models: list[str], prompt_version: str) -> dict[str, Any]:
     payload = {
         "batch_id": batch_id,
         "source": source,
         "profile": profile,
-        "mode": mode,
+        "models": models,
+        "prompt_version": prompt_version,
         "status": "pending",
         "steps": default_steps(),
         "error": None,
@@ -121,39 +131,39 @@ def run_pipeline_job(job: dict[str, Any]) -> None:
     batch_id = job["batch_id"]
     source = job["source"]
     profile = job["profile"]
-    mode = job["mode"]
-    prompt_version = job.get("prompt_version", "v1")
+    models = job["models"]
+    prompt_version = job["prompt_version"]
     try:
         if source in {"mock", "imap"}:
             set_step(batch_id, "ingest", "processing", f"Pulling from {source}")
             call_json("POST", f"{service_url('mail_ingestor')}/api/batches/{batch_id}/pull")
             set_step(batch_id, "ingest", "done", "Attachments pulled")
         else:
-            set_step(batch_id, "ingest", "done", "Local upload stored")
+            set_step(batch_id, "ingest", "done", "Uploaded files stored")
 
         set_step(batch_id, "organize", "processing", "Organizing attachments")
         call_json("POST", f"{service_url('attachment_organizer')}/api/batches/{batch_id}/organize")
-        set_step(batch_id, "organize", "done", "Staging ready")
+        set_step(batch_id, "organize", "done", "staging_manifest.json ready")
 
         set_step(batch_id, "process", "processing", f"Processing with {profile}")
         call_json("POST", f"{service_url('image_preprocessor')}/api/batches/{batch_id}/process", params={"profile": profile})
-        set_step(batch_id, "process", "done", "Pages generated")
+        set_step(batch_id, "process", "done", "processed manifest ready")
 
-        set_step(batch_id, "dispatch", "processing", f"Dispatching via {mode}")
+        set_step(batch_id, "dispatch", "processing", f"Dispatching models: {', '.join(models)}")
         call_json(
             "POST",
             f"{service_url('ai_dispatcher')}/api/batches/{batch_id}/dispatch",
-            params={"mode": mode, "prompt_version": prompt_version},
+            json={"models": models, "prompt_version": prompt_version},
         )
-        set_step(batch_id, "dispatch", "done", "AI raw responses stored")
+        set_step(batch_id, "dispatch", "done", "Model raw responses stored")
 
         set_step(batch_id, "clean", "processing", "Normalizing AI output")
         call_json("POST", f"{service_url('ai_cleaner')}/api/batches/{batch_id}/clean")
-        set_step(batch_id, "clean", "done", "Normalized results ready")
+        set_step(batch_id, "clean", "done", "normalized_results.jsonl ready")
 
         set_step(batch_id, "index", "processing", "Indexing into SQLite")
         call_json("POST", f"{service_url('index_export')}/api/batches/{batch_id}/index")
-        set_step(batch_id, "index", "done", "Indexed and searchable")
+        set_step(batch_id, "index", "done", "Indexed and exportable")
         append_batch_log(batch_id, "orchestrator", "Full pipeline finished.")
     except Exception as exc:
         append_batch_log(batch_id, "orchestrator", f"Pipeline failed: {exc}")
@@ -189,25 +199,75 @@ def on_startup() -> None:
     ensure_worker()
 
 
+def proxy_binary(url: str) -> Response:
+    with client() as session:
+        upstream = session.get(url)
+    upstream.raise_for_status()
+    content_type = upstream.headers.get("content-type")
+    headers: dict[str, str] = {}
+    content_disposition = upstream.headers.get("content-disposition")
+    if content_disposition:
+        headers["content-disposition"] = content_disposition
+    return Response(content=upstream.content, media_type=content_type, headers=headers)
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     return success_response({"service": "orchestrator", "status": "ok", "queue_size": job_queue.qsize()})
 
 
+@app.get("/api/models")
+def list_models() -> dict[str, Any]:
+    data = call_json("GET", f"{service_url('model_hub')}/api/models")
+    return success_response(data)
+
+
 @app.post("/api/run/full")
-def run_full(source: str = "mock", profile: str = "prod_default", mode: str = "mock") -> dict[str, Any]:
+async def run_full(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    source = payload.get("source") or request.query_params.get("source", "mock")
+    profile = payload.get("profile") or request.query_params.get("profile", "prod_default")
+    prompt_version = payload.get("prompt_version") or request.query_params.get("prompt_version", "v1")
+    models = normalize_models(payload.get("models"))
+
     if source not in {"mock", "imap"}:
-        fail("source must be mock or imap")
+        fail("source must be mock or imap for /api/run/full. Use /api/run/upload for upload.", code="invalid_source")
+
     batch = call_json("POST", f"{service_url('mail_ingestor')}/api/batches/create", params={"source": source})
     batch_id = batch["batch_id"]
-    payload = init_batch_status(batch_id, source, profile, mode)
-    job_queue.put({"batch_id": batch_id, "source": source, "profile": profile, "mode": mode, "prompt_version": "v1"})
-    append_batch_log(batch_id, "orchestrator", f"Enqueued full pipeline source={source}, profile={profile}, mode={mode}.")
-    return success_response(payload)
+    status = init_batch_status(batch_id, source, profile, models, prompt_version)
+    job_queue.put(
+        {
+            "batch_id": batch_id,
+            "source": source,
+            "profile": profile,
+            "models": models,
+            "prompt_version": prompt_version,
+        }
+    )
+    append_batch_log(
+        batch_id,
+        "orchestrator",
+        f"Enqueued full pipeline source={source}, profile={profile}, models={','.join(models)}, prompt={prompt_version}.",
+    )
+    return success_response(status)
 
 
 @app.post("/api/run/upload")
-async def run_upload(profile: str = "prod_default", mode: str = "mock", files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def run_upload(
+    profile: str = Form("prod_default"),
+    prompt_version: str = Form("v1"),
+    models: str = Form('["mock"]'),
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    try:
+        selected_models = normalize_models(json.loads(models))
+    except json.JSONDecodeError:
+        fail("models form field must be a JSON array string", code="invalid_models")
+
     batch = call_json("POST", f"{service_url('mail_ingestor')}/api/batches/create", params={"source": "upload"})
     batch_id = batch["batch_id"]
 
@@ -223,27 +283,44 @@ async def run_upload(profile: str = "prod_default", mode: str = "mock", files: l
         for upload in files:
             await upload.close()
 
-    payload = init_batch_status(batch_id, "upload", profile, mode)
+    init_batch_status(batch_id, "upload", profile, selected_models, prompt_version)
     set_step(batch_id, "ingest", "done", "Uploaded files stored")
-    job_queue.put({"batch_id": batch_id, "source": "upload", "profile": profile, "mode": mode, "prompt_version": "v1"})
-    append_batch_log(batch_id, "orchestrator", f"Enqueued upload pipeline with {len(multipart_files)} files.")
+    job_queue.put(
+        {
+            "batch_id": batch_id,
+            "source": "upload",
+            "profile": profile,
+            "models": selected_models,
+            "prompt_version": prompt_version,
+        }
+    )
+    append_batch_log(
+        batch_id,
+        "orchestrator",
+        f"Enqueued upload pipeline files={len(multipart_files)}, profile={profile}, models={','.join(selected_models)}.",
+    )
     return success_response(read_status(batch_id))
 
 
 @app.get("/api/batches/{batch_id}/status")
 def batch_status(batch_id: str) -> dict[str, Any]:
     payload = read_status(batch_id)
-    extras: dict[str, Any] = {}
     try:
-        extras["pages"] = call_json("GET", f"{service_url('image_preprocessor')}/api/batches/{batch_id}/pages")["pages"]
+        payload["pages"] = call_json("GET", f"{service_url('image_preprocessor')}/api/batches/{batch_id}/pages")["pages"]
     except Exception:
-        extras["pages"] = []
+        payload["pages"] = []
     try:
-        extras["results"] = call_json("GET", f"{service_url('ai_cleaner')}/api/batches/{batch_id}/results")["pages"]
+        payload["dispatch"] = call_json("GET", f"{service_url('ai_dispatcher')}/api/batches/{batch_id}/status")
     except Exception:
-        extras["results"] = []
-    payload["pages"] = extras["pages"]
-    payload["results"] = extras["results"]
+        payload["dispatch"] = None
+    try:
+        payload["results"] = call_json("GET", f"{service_url('ai_cleaner')}/api/batches/{batch_id}/results")["pages"]
+    except Exception:
+        payload["results"] = []
+    try:
+        payload["index"] = call_json("GET", f"{service_url('index_export')}/api/batches/{batch_id}")
+    except Exception:
+        payload["index"] = None
     return success_response(payload)
 
 
@@ -257,6 +334,7 @@ def search_invoices(
     min_total: str | None = None,
     max_total: str | None = None,
     batch_id: str | None = None,
+    model_key: str | None = None,
 ) -> dict[str, Any]:
     params = {
         "start_date": start_date,
@@ -267,8 +345,13 @@ def search_invoices(
         "min_total": min_total,
         "max_total": max_total,
         "batch_id": batch_id,
+        "model_key": model_key,
     }
-    data = call_json("GET", f"{service_url('index_export')}/api/invoices/search", params={k: v for k, v in params.items() if v not in (None, "")})
+    data = call_json(
+        "GET",
+        f"{service_url('index_export')}/api/invoices/search",
+        params={key: value for key, value in params.items() if value not in (None, "")},
+    )
     for item in data.get("items", []):
         item["thumb_url"] = f"/api/assets/thumb/{item['batch_id']}/{item['page_id']}"
         item["image_url"] = f"/api/assets/image/{item['batch_id']}/{item['page_id']}"
@@ -282,20 +365,6 @@ async def create_export(request: Request) -> dict[str, Any]:
     data["csv_url"] = f"/api/exports/{data['export_id']}/csv"
     data["zip_url"] = f"/api/exports/{data['export_id']}/zip"
     return success_response(data)
-
-
-def proxy_binary(url: str) -> Response:
-    with client() as session:
-        upstream = session.get(url)
-    upstream.raise_for_status()
-    headers = {}
-    content_type = upstream.headers.get("content-type")
-    if content_type:
-        headers["content-type"] = content_type
-    content_disposition = upstream.headers.get("content-disposition")
-    if content_disposition:
-        headers["content-disposition"] = content_disposition
-    return Response(content=upstream.content, media_type=content_type, headers=headers)
 
 
 @app.get("/api/exports/{export_id}/csv")
