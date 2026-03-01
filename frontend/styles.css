@@ -322,6 +322,10 @@ th {
   background: rgba(9, 18, 35, 0.58);
 }
 
+.modal-backdrop[hidden] {
+  display: none;
+}
+
 .modal-panel {
   position: relative;
   width: min(1100px, 100%);

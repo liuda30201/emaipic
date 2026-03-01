@@ -70,6 +70,8 @@ function closePreviewModal() {
   setPreviewScale(1);
 }
 
+closePreviewModal();
+
 function openPreviewModal({ batch_id, page_id, model_key, record }) {
   if (!batch_id || !page_id) {
     statusError.textContent = "缺少 batch_id 或 page_id，无法预览 AI 输入图";
