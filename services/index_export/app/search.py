@@ -6,9 +6,10 @@ from typing import Any
 from libs.common.models import SearchFilters
 
 ALL_MODELS_KEY = "__all__"
+INVOICE_ONLY_FILTER_KEYS = ("start_date", "end_date", "buyer", "seller", "invoice_no", "min_total", "max_total")
 
 
-def _where_clauses(filters: SearchFilters) -> tuple[list[str], list[Any]]:
+def _invoice_where_clauses(filters: SearchFilters) -> tuple[list[str], list[Any]]:
     clauses = ["i.is_invoice = 1"]
     params: list[Any] = []
     compact = filters.compact()
@@ -43,9 +44,26 @@ def _where_clauses(filters: SearchFilters) -> tuple[list[str], list[Any]]:
     return clauses, params
 
 
-def search_invoices(connection: sqlite3.Connection, filters: SearchFilters) -> list[dict[str, Any]]:
-    connection.row_factory = sqlite3.Row
-    clauses, params = _where_clauses(filters)
+def _failed_where_clauses(filters: SearchFilters) -> tuple[list[str], list[Any]]:
+    clauses = ["mr.status != 'done'"]
+    params: list[Any] = []
+    compact = filters.compact()
+
+    if any(compact.get(key) for key in INVOICE_ONLY_FILTER_KEYS):
+        clauses.append("1 = 0")
+        return clauses, params
+
+    if "batch_id" in compact:
+        clauses.append("mr.batch_id = ?")
+        params.append(compact["batch_id"])
+    if "model_key" in compact and compact["model_key"] != ALL_MODELS_KEY:
+        clauses.append("mr.model_key = ?")
+        params.append(compact["model_key"])
+    return clauses, params
+
+
+def _success_records(connection: sqlite3.Connection, filters: SearchFilters) -> list[dict[str, Any]]:
+    clauses, params = _invoice_where_clauses(filters)
     where_sql = " AND ".join(clauses)
 
     base_query = f"""
@@ -71,6 +89,9 @@ def search_invoices(connection: sqlite3.Connection, filters: SearchFilters) -> l
             i.tax,
             i.total,
             i.created_at,
+            'done' AS result_status,
+            NULL AS error_reason,
+            NULL AS error_message,
             CASE WHEN i.model_key = 'mock' THEN 0 ELSE 1 END AS model_rank
         FROM invoices i
         JOIN pages p ON p.page_id = i.page_id
@@ -118,7 +139,10 @@ def search_invoices(connection: sqlite3.Connection, filters: SearchFilters) -> l
                 amount,
                 tax,
                 total,
-                created_at
+                created_at,
+                result_status,
+                error_reason,
+                error_message
             FROM ranked
             WHERE rn = 1
             ORDER BY COALESCE(invoice_date, '') DESC, page_no ASC, record_index ASC, model_key ASC
@@ -129,7 +153,56 @@ def search_invoices(connection: sqlite3.Connection, filters: SearchFilters) -> l
     for row in rows:
         item = dict(row)
         item.pop("model_rank", None)
+        results.append(item)
+    return results
+
+
+def _failed_records(connection: sqlite3.Connection, filters: SearchFilters) -> list[dict[str, Any]]:
+    clauses, params = _failed_where_clauses(filters)
+    where_sql = " AND ".join(clauses)
+    query = f"""
+        SELECT
+            mr.batch_id,
+            mr.page_id,
+            mr.file_id,
+            mr.doc_id,
+            p.page_no,
+            p.image_relpath,
+            p.thumb_relpath,
+            f.original_relpath,
+            mr.model_key,
+            mr.run_id,
+            NULL AS record_index,
+            0 AS is_invoice,
+            NULL AS invoice_no,
+            NULL AS invoice_date,
+            NULL AS buyer_name,
+            NULL AS seller_name,
+            NULL AS service_name,
+            NULL AS amount,
+            NULL AS tax,
+            NULL AS total,
+            mr.created_at,
+            mr.status AS result_status,
+            mr.error_reason,
+            mr.error_message
+        FROM model_runs mr
+        JOIN pages p ON p.page_id = mr.page_id
+        JOIN files f ON f.file_id = mr.file_id
+        WHERE {where_sql}
+        ORDER BY mr.created_at DESC, p.page_no ASC, mr.model_key ASC
+    """
+    rows = connection.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def search_invoices(connection: sqlite3.Connection, filters: SearchFilters) -> list[dict[str, Any]]:
+    connection.row_factory = sqlite3.Row
+    results = _success_records(connection, filters)
+    if filters.include_failed:
+        results.extend(_failed_records(connection, filters))
+
+    for item in results:
         item["thumb_url"] = f"/api/assets/thumb/{item['batch_id']}/{item['page_id']}"
         item["image_url"] = f"/api/assets/image/{item['batch_id']}/{item['page_id']}"
-        results.append(item)
     return results

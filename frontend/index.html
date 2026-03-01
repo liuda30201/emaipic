@@ -84,6 +84,17 @@
               <option value="__all__">全部模型（默认）</option>
             </select>
           </label>
+          <label class="checkbox-field">
+            <span>包含失败记录</span>
+            <input id="includeFailed" type="checkbox" />
+          </label>
+          <label>
+            导出范围
+            <select id="exportScope">
+              <option value="success_only">仅成功</option>
+              <option value="all_results">全部结果（含失败）</option>
+            </select>
+          </label>
         </div>
         <div class="toolbar">
           <button id="searchButton">搜索</button>
@@ -99,6 +110,8 @@
                 <th>发票号</th>
                 <th>日期</th>
                 <th>模型</th>
+                <th>状态</th>
+                <th>失败原因</th>
                 <th>购买方</th>
                 <th>销售方</th>
                 <th>金额</th>

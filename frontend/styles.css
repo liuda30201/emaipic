@@ -263,6 +263,18 @@ pre {
   gap: 12px;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: auto;
+  margin-top: 0;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

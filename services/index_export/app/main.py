@@ -75,6 +75,20 @@ INVOICES_COLUMNS = [
     "file_id",
     "doc_id",
 ]
+MODEL_RUNS_COLUMNS = [
+    "page_id",
+    "model_key",
+    "run_id",
+    "status",
+    "record_count",
+    "is_invoice_detected",
+    "error_reason",
+    "error_message",
+    "created_at",
+    "batch_id",
+    "file_id",
+    "doc_id",
+]
 
 
 def table_columns(connection: sqlite3.Connection, table_name: str) -> list[str]:
@@ -89,6 +103,7 @@ def ensure_schema() -> None:
             "files": FILES_COLUMNS,
             "pages": PAGES_COLUMNS,
             "invoices": INVOICES_COLUMNS,
+            "model_runs": MODEL_RUNS_COLUMNS,
         }
         for table_name, columns in expected.items():
             existing = table_columns(connection, table_name)
@@ -150,6 +165,25 @@ def ensure_schema() -> None:
                 file_id TEXT NOT NULL,
                 doc_id TEXT NOT NULL,
                 PRIMARY KEY (page_id, model_key, run_id, record_index)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS model_runs (
+                page_id TEXT NOT NULL,
+                model_key TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                record_count INTEGER NOT NULL,
+                is_invoice_detected INTEGER,
+                error_reason TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                batch_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                doc_id TEXT NOT NULL,
+                PRIMARY KEY (page_id, model_key, run_id)
             )
             """
         )
@@ -228,6 +262,9 @@ def export_csv(records: list[dict[str, Any]]) -> str:
             "file_id",
             "page_id",
             "page_no",
+            "result_status",
+            "error_reason",
+            "error_message",
             "model_key",
             "run_id",
             "record_index",
@@ -370,6 +407,7 @@ def index_batch(batch_id: str) -> dict[str, Any]:
 
     with open_connection() as connection:
         connection.execute("DELETE FROM invoices WHERE batch_id = ?", (batch_id,))
+        connection.execute("DELETE FROM model_runs WHERE batch_id = ?", (batch_id,))
         connection.execute("DELETE FROM pages WHERE batch_id = ?", (batch_id,))
         connection.execute("DELETE FROM files WHERE batch_id = ?", (batch_id,))
 
@@ -447,6 +485,39 @@ def index_batch(batch_id: str) -> dict[str, Any]:
                     record["doc_id"],
                 ),
             )
+
+        for page_entry in clean_summary.get("pages", []):
+            doc_id = page_entry.get("doc_id")
+            file_id = page_entry.get("file_id")
+            for model_run in page_entry.get("models", []):
+                records = model_run.get("records") or []
+                issues = model_run.get("issues") or []
+                primary_issue = issues[0] if issues else {}
+                is_invoice_detected = None
+                if records:
+                    is_invoice_detected = 1 if any(item.get("is_invoice") for item in records) else 0
+                connection.execute(
+                    """
+                    INSERT INTO model_runs (
+                        page_id, model_key, run_id, status, record_count, is_invoice_detected,
+                        error_reason, error_message, created_at, batch_id, file_id, doc_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        page_entry["page_id"],
+                        model_run["model_key"],
+                        model_run["run_id"],
+                        model_run.get("status", "done"),
+                        len(records),
+                        is_invoice_detected,
+                        primary_issue.get("reason") if model_run.get("status") != "done" else None,
+                        primary_issue.get("message") if model_run.get("status") != "done" else None,
+                        indexed_at,
+                        batch_id,
+                        file_id,
+                        doc_id,
+                    ),
+                )
         connection.commit()
 
     status = {
@@ -479,6 +550,7 @@ def search_endpoint(
     max_total: str | None = None,
     batch_id: str | None = None,
     model_key: str | None = None,
+    include_failed: bool = False,
 ) -> dict[str, Any]:
     filters = SearchFilters(
         start_date=start_date,
@@ -490,6 +562,7 @@ def search_endpoint(
         max_total=max_total,
         batch_id=batch_id,
         model_key=model_key,
+        include_failed=include_failed,
     )
     with open_connection() as connection:
         records = search_invoices(connection, filters)
@@ -497,7 +570,24 @@ def search_endpoint(
 
 
 @app.post("/api/exports")
-def create_export(filters: SearchFilters = Body(default=SearchFilters())) -> dict[str, Any]:
+def create_export(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
+    payload = payload or {}
+    export_scope = str(payload.get("export_scope") or "success_only")
+    if export_scope not in {"success_only", "all_results"}:
+        fail("invalid export_scope", status_code=400, code="invalid_request")
+
+    filters = SearchFilters(
+        start_date=payload.get("start_date"),
+        end_date=payload.get("end_date"),
+        buyer=payload.get("buyer"),
+        seller=payload.get("seller"),
+        invoice_no=payload.get("invoice_no"),
+        min_total=payload.get("min_total"),
+        max_total=payload.get("max_total"),
+        batch_id=payload.get("batch_id"),
+        model_key=payload.get("model_key"),
+        include_failed=export_scope == "all_results",
+    )
     with open_connection() as connection:
         records = search_invoices(connection, filters)
     export_id = new_id("export")

@@ -343,6 +343,7 @@ def search_invoices(
     max_total: str | None = None,
     batch_id: str | None = None,
     model_key: str | None = None,
+    include_failed: bool = False,
 ) -> dict[str, Any]:
     params = {
         "start_date": start_date,
@@ -354,6 +355,7 @@ def search_invoices(
         "max_total": max_total,
         "batch_id": batch_id,
         "model_key": model_key,
+        "include_failed": include_failed,
     }
     data = call_json(
         "GET",

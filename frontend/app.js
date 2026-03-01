@@ -29,6 +29,8 @@ const searchMeta = document.getElementById("searchMeta");
 const modelList = document.getElementById("modelList");
 const modelSelectionHint = document.getElementById("modelSelectionHint");
 const searchModelKey = document.getElementById("searchModelKey");
+const includeFailed = document.getElementById("includeFailed");
+const exportScope = document.getElementById("exportScope");
 const previewModal = document.getElementById("previewModal");
 const previewCloseButton = document.getElementById("previewCloseButton");
 const previewZoomOut = document.getElementById("previewZoomOut");
@@ -404,6 +406,9 @@ function collectFilters() {
     batch_id: document.getElementById("searchBatchId").value.trim(),
     model_key: document.getElementById("searchModelKey").value
   };
+  if (includeFailed.checked) {
+    filters.include_failed = true;
+  }
   Object.keys(filters).forEach((key) => {
     if (!filters[key]) {
       delete filters[key];
@@ -416,7 +421,7 @@ function renderSearch(items) {
   state.latestSearch = items;
   searchMeta.textContent = `命中 ${items.length} 条`;
   if (!items.length) {
-    searchResults.innerHTML = `<tr><td colspan="9" class="hint">无结果</td></tr>`;
+    searchResults.innerHTML = `<tr><td colspan="11" class="hint">无结果</td></tr>`;
     return;
   }
   searchResults.innerHTML = items
@@ -450,6 +455,8 @@ function renderSearch(items) {
           <td>${escapeHtml(item.invoice_no || "")}</td>
           <td>${escapeHtml(item.invoice_date || "")}</td>
           <td>${escapeHtml(item.model_key || "")}</td>
+          <td>${escapeHtml(item.result_status || "done")}</td>
+          <td>${escapeHtml([item.error_reason, item.error_message].filter(Boolean).join(": "))}</td>
           <td>${escapeHtml(item.buyer_name || "")}</td>
           <td>${escapeHtml(item.seller_name || "")}</td>
           <td>${escapeHtml(item.amount || "")}</td>
@@ -487,7 +494,10 @@ async function searchInvoices() {
 
 async function createExport(kind) {
   try {
-    const filters = collectFilters();
+    const filters = {
+      ...collectFilters(),
+      export_scope: exportScope.value
+    };
     const data = await getJson(`${baseUrl}/api/exports`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

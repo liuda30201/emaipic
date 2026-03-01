@@ -63,6 +63,25 @@ def setup_table(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE model_runs (
+            page_id TEXT NOT NULL,
+            model_key TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_count INTEGER NOT NULL,
+            is_invoice_detected INTEGER,
+            error_reason TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            batch_id TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            PRIMARY KEY (page_id, model_key, run_id)
+        )
+        """
+    )
     connection.executemany(
         """
         INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -193,6 +212,69 @@ def setup_table(connection: sqlite3.Connection) -> None:
             ),
         ],
     )
+    connection.executemany(
+        """
+        INSERT INTO model_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "page_1",
+                "mock",
+                "run_1",
+                "done",
+                1,
+                1,
+                None,
+                None,
+                "2026-03-01T00:00:00",
+                "batch_1",
+                "file_1",
+                "doc_1",
+            ),
+            (
+                "page_1",
+                "glm-ocr",
+                "run_2",
+                "done",
+                1,
+                1,
+                None,
+                None,
+                "2026-03-01T00:00:01",
+                "batch_1",
+                "file_1",
+                "doc_1",
+            ),
+            (
+                "page_2",
+                "mock",
+                "run_3",
+                "done",
+                1,
+                1,
+                None,
+                None,
+                "2026-03-01T00:01:00",
+                "batch_2",
+                "file_2",
+                "doc_2",
+            ),
+            (
+                "page_2",
+                "glm-4.6v-flash",
+                "run_4",
+                "failed",
+                0,
+                None,
+                "dispatch_failed",
+                "glm inference failed",
+                "2026-03-01T00:01:01",
+                "batch_2",
+                "file_2",
+                "doc_2",
+            ),
+        ],
+    )
     connection.commit()
 
 
@@ -229,3 +311,14 @@ def test_search_invoices_returns_all_models_when_requested() -> None:
     results = search_invoices(connection, SearchFilters(model_key="__all__"))
     assert len(results) == 3
     assert {item["model_key"] for item in results} == {"mock", "glm-ocr"}
+
+
+def test_search_invoices_can_include_failed_runs() -> None:
+    connection = sqlite3.connect(":memory:")
+    setup_table(connection)
+    results = search_invoices(connection, SearchFilters(batch_id="batch_2", model_key="__all__", include_failed=True))
+    assert len(results) == 2
+    failed = [item for item in results if item["result_status"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["model_key"] == "glm-4.6v-flash"
+    assert failed[0]["error_reason"] == "dispatch_failed"

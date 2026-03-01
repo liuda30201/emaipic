@@ -63,10 +63,11 @@ class SearchFilters(BaseModel):
     max_total: Optional[str] = None
     batch_id: Optional[str] = None
     model_key: Optional[str] = None
+    include_failed: bool = False
 
     def compact(self) -> dict[str, Any]:
         data = self.model_dump()
-        return {key: value for key, value in data.items() if value not in (None, "")}
+        return {key: value for key, value in data.items() if value not in (None, "", False)}
 
 
 class ModelDescriptor(BaseModel):
